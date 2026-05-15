@@ -136,6 +136,7 @@ impl ConnectionManager {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub async fn spawn_agent(
         &self,
         agent_type: AgentType,
@@ -144,6 +145,8 @@ impl ConnectionManager {
         runtime_env: BTreeMap<String, String>,
         owner_window_label: String,
         emitter: EventEmitter,
+        preferred_mode_id: Option<String>,
+        preferred_config_values: BTreeMap<String, String>,
     ) -> Result<String, AcpError> {
         // Connection dedup: when resuming an agent session (session_id is
         // Some), look for a live AgentConnection that already represents
@@ -212,6 +215,8 @@ impl ConnectionManager {
             owner_window_label,
             emitter,
             self.connections.clone(),
+            preferred_mode_id,
+            preferred_config_values,
         )
         .await?;
 

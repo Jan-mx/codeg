@@ -49,6 +49,10 @@ pub struct AcpConnectParams {
     pub agent_type: AgentType,
     pub working_dir: Option<String>,
     pub session_id: Option<String>,
+    #[serde(default)]
+    pub preferred_mode_id: Option<String>,
+    #[serde(default)]
+    pub preferred_config_values: Option<BTreeMap<String, String>>,
 }
 
 pub async fn acp_connect(
@@ -120,6 +124,8 @@ pub async fn acp_connect(
             runtime_env,
             "web".to_string(),
             emitter,
+            params.preferred_mode_id,
+            params.preferred_config_values.unwrap_or_default(),
         )
         .await
         .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))?;

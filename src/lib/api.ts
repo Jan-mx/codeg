@@ -118,12 +118,16 @@ export async function getSidebarData(): Promise<SidebarData> {
 export async function acpConnect(
   agentType: AgentType,
   workingDir?: string,
-  sessionId?: string
+  sessionId?: string,
+  preferredModeId?: string | null,
+  preferredConfigValues?: Record<string, string> | null
 ): Promise<string> {
   return getTransport().call("acp_connect", {
     agentType,
     workingDir: workingDir ?? null,
     sessionId: sessionId ?? null,
+    preferredModeId: preferredModeId ?? null,
+    preferredConfigValues: preferredConfigValues ?? null,
   })
 }
 

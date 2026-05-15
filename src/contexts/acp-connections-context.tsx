@@ -54,11 +54,9 @@ import {
 } from "@/lib/constants"
 import { sendSystemNotification } from "@/lib/notification"
 import {
-  applySavedModePreference,
-  applySavedConfigPreferences,
+  getSavedPrefsForConnect,
   saveModePreference,
   saveConfigPreference,
-  clearStalePrefs,
 } from "@/lib/selector-prefs-storage"
 import { useAlertContext, type AlertAction } from "@/contexts/alert-context"
 import { useActiveFolder } from "@/contexts/active-folder-context"
@@ -2133,80 +2131,43 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
           break
         case "session_modes": {
           flushStreamingQueue()
-          const modeConn = storeRef.current.connections.get(contextKey)
-          const resolvedModes = modeConn
-            ? applySavedModePreference(modeConn.agentType, e.modes)
-            : e.modes
+          // Preferences are applied on the backend during connect (see
+          // `getSavedPrefsForConnect` + `acp_connect`), so `e.modes` already
+          // carries the user's preferred `current_mode_id` — no client-side
+          // override or sync-back needed.
           dispatch({
             type: "SESSION_MODES",
             contextKey,
-            modes: resolvedModes,
+            modes: e.modes,
           })
+          const modeConn = storeRef.current.connections.get(contextKey)
           if (modeConn) {
             const entry = selectorsCache.get(modeConn.agentType) ?? {
               modes: null,
               configOptions: null,
             }
-            entry.modes = resolvedModes
+            entry.modes = e.modes
             selectorsCache.set(modeConn.agentType, entry)
-            // Sync cached mode to backend if it differs from server default
-            if (
-              resolvedModes.current_mode_id &&
-              resolvedModes.current_mode_id !== e.modes.current_mode_id
-            ) {
-              acpSetMode(
-                modeConn.connectionId,
-                resolvedModes.current_mode_id
-              ).catch((err: unknown) =>
-                console.error(
-                  "[ACP] Failed to sync saved mode to backend:",
-                  err
-                )
-              )
-            }
           }
           break
         }
         case "session_config_options": {
           flushStreamingQueue()
-          const cfgConn = storeRef.current.connections.get(contextKey)
-          const resolvedConfigOptions = cfgConn
-            ? applySavedConfigPreferences(cfgConn.agentType, e.config_options)
-            : e.config_options
+          // Same as `session_modes`: backend already merged saved prefs
+          // into `current_value` before emitting.
           dispatch({
             type: "SESSION_CONFIG_OPTIONS",
             contextKey,
-            configOptions: resolvedConfigOptions,
+            configOptions: e.config_options,
           })
+          const cfgConn = storeRef.current.connections.get(contextKey)
           if (cfgConn) {
             const entry = selectorsCache.get(cfgConn.agentType) ?? {
               modes: null,
               configOptions: null,
             }
-            entry.configOptions = resolvedConfigOptions
+            entry.configOptions = e.config_options
             selectorsCache.set(cfgConn.agentType, entry)
-            // Sync cached config options to backend if they differ
-            for (let i = 0; i < resolvedConfigOptions.length; i++) {
-              const resolved = resolvedConfigOptions[i]
-              const original = e.config_options[i]
-              if (
-                resolved.kind.type === "select" &&
-                original.kind.type === "select" &&
-                resolved.kind.current_value !== original.kind.current_value &&
-                resolved.kind.current_value
-              ) {
-                acpSetConfigOption(
-                  cfgConn.connectionId,
-                  resolved.id,
-                  resolved.kind.current_value
-                ).catch((err: unknown) =>
-                  console.error(
-                    "[ACP] Failed to sync saved config option to backend:",
-                    err
-                  )
-                )
-              }
-            }
           }
           break
         }
@@ -2224,13 +2185,6 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
               modes: rdyConn.modes,
               configOptions: rdyConn.configOptions,
             })
-          }
-          // Clean up stale localStorage prefs for agents that genuinely
-          // no longer provide modes or config options.
-          if (rdyConn) {
-            const hasModes = (rdyConn.modes?.available_modes.length ?? 0) > 0
-            const hasConfig = (rdyConn.configOptions?.length ?? 0) > 0
-            clearStalePrefs(rdyConn.agentType, hasModes, hasConfig)
           }
           break
         }
@@ -2892,7 +2846,26 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
         // need this gate, but the wait is a fast no-op once the initial
         // subscribe resolves.
         await waitForListenerReady()
-        const connectionId = await acpConnect(agentType, workingDir, sessionId)
+        // Ship the user's saved selector preferences (mode + per-config
+        // values, persisted per agentType in localStorage) up to the backend
+        // at connect time. The backend applies them on the freshly-attached
+        // session before emitting `session_modes` / `session_config_options`,
+        // so by the time the frontend sees those events (or a snapshot frame
+        // on the Subscribe-with-Snapshot attach), `current_mode_id` and
+        // `current_value` already reflect the user's preferences. This
+        // eliminates the prior "intercept event → overwrite locally → sync
+        // back to agent" path, which fixed new-conversation flow but quietly
+        // regressed when the snapshot path replaced the event path on tab
+        // re-open (the snapshot frame doesn't carry a `session_modes` event,
+        // so the apply-on-event hook never fired).
+        const savedPrefs = getSavedPrefsForConnect(agentType)
+        const connectionId = await acpConnect(
+          agentType,
+          workingDir,
+          sessionId,
+          savedPrefs.modeId,
+          savedPrefs.configValues
+        )
 
         // If disconnect was requested while connect was in flight,
         // tear down immediately instead of registering the connection.
@@ -3125,14 +3098,9 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
         configId,
         valueId,
       })
-      // Persist user selection to localStorage
-      const updatedConn = storeRef.current.connections.get(contextKey)
-      const allOptions =
-        updatedConn?.configOptions ??
-        selectorsCache.get(conn.agentType)?.configOptions
-      if (allOptions) {
-        saveConfigPreference(conn.agentType, configId, valueId, allOptions)
-      }
+      // Persist user selection to localStorage so the next `acp_connect`
+      // can ship it back to the backend as a preferred config value.
+      saveConfigPreference(conn.agentType, configId, valueId)
       lastActivityRef.current.set(contextKey, Date.now())
       await acpSetConfigOption(conn.connectionId, configId, valueId)
     },

@@ -295,6 +295,16 @@ impl SessionState {
             }
             AcpEvent::ModeChanged { mode_id } => {
                 self.current_mode = Some(mode_id.clone());
+                // Keep `modes.current_mode_id` consistent with the latched
+                // `current_mode`. Snapshot consumers read `modes.current_mode_id`
+                // directly (the frontend's `denormalizeSnapshot` does not look
+                // at the separate `current_mode` field), so without this sync
+                // a session that has switched modes would hydrate post-refresh
+                // showing the original default — even though the live event
+                // stream has long since corrected it.
+                if let Some(modes) = self.modes.as_mut() {
+                    modes.current_mode_id = mode_id.clone();
+                }
             }
             AcpEvent::SessionConfigOptions { config_options } => {
                 self.config_options = Some(config_options.clone());
@@ -1138,6 +1148,17 @@ mod tests {
             mode_id: "edit".into(),
         });
         assert_eq!(s.current_mode.as_deref(), Some("edit"));
+        // Snapshot consistency invariant: ModeChanged must keep
+        // `modes.current_mode_id` in sync with the scalar `current_mode`.
+        // The frontend's `denormalizeSnapshot` reads `modes.current_mode_id`
+        // exclusively; without this sync a post-refresh hydration would
+        // show the stale default even though the live event stream had
+        // long since switched modes.
+        assert_eq!(
+            s.modes.as_ref().unwrap().current_mode_id,
+            "edit",
+            "ModeChanged must keep modes.current_mode_id consistent for snapshot consumers"
+        );
     }
 
     #[test]

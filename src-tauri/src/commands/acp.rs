@@ -2141,10 +2141,13 @@ pub async fn acp_preflight(
 
 #[cfg(feature = "tauri-runtime")]
 #[cfg_attr(feature = "tauri-runtime", tauri::command)]
+#[allow(clippy::too_many_arguments)]
 pub async fn acp_connect(
     agent_type: AgentType,
     working_dir: Option<String>,
     session_id: Option<String>,
+    preferred_mode_id: Option<String>,
+    preferred_config_values: Option<BTreeMap<String, String>>,
     manager: State<'_, ConnectionManager>,
     db: State<'_, AppDatabase>,
     app_handle: tauri::AppHandle,
@@ -2207,6 +2210,8 @@ pub async fn acp_connect(
             runtime_env,
             window.label().to_string(),
             emitter,
+            preferred_mode_id,
+            preferred_config_values.unwrap_or_default(),
         )
         .await
 }

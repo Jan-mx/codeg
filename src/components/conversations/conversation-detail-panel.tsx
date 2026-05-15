@@ -193,7 +193,19 @@ const ConversationTabView = memo(function ConversationTabView({
   const dbConversationId = conversationId ?? createdConversationId
   const [draftAgentType, setDraftAgentType] = useState<AgentType>(agentType)
   const selectedAgent = conversationId != null ? agentType : draftAgentType
-  const [modeId, setModeId] = useState<string | null>(null)
+  // Seed from localStorage so the React state reflects the user's saved
+  // mode for this agent immediately on mount. Without this seed, a reuse-
+  // path connect (idle window after a refresh, before the agent is GC'd)
+  // would silently fall back to whatever `current_mode_id` the backend
+  // happens to be on: `handleModeChange` updates only React state and
+  // localStorage, not the agent — the agent gets synced inside
+  // `handleSend` by diffing `modeId` against `modes.current_mode_id`.
+  // A null seed here means that diff is "agent default vs null", which
+  // resolves the displayed mode through `conn.modes.current_mode_id`
+  // and never triggers the catch-up `setMode`.
+  const [modeId, setModeId] = useState<string | null>(() =>
+    getSavedModeId(agentType)
+  )
   const [sendSignal, setSendSignal] = useState(0)
   const [agentsLoaded, setAgentsLoaded] = useState(false)
   const [usableAgentCount, setUsableAgentCount] = useState(0)

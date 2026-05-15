@@ -4,25 +4,26 @@
  * Persists user's selector preferences (mode & config option selections)
  * per agentType to localStorage, so they survive session restarts.
  *
- * Structure hash is stored alongside values — when the available options
- * change (new/removed/renamed items) the saved prefs are discarded.
+ * Structure hash is stored alongside values — when the saved value no
+ * longer exists in the current option set (item renamed / removed) the
+ * backend's `set_session_config_option` will reject the application and
+ * the stale value is naturally dropped on the next user pick.
  *
- * Agents may emit empty selectors during early init (config_options=None
- * becomes []), followed by real selectors later. We therefore only apply
- * or invalidate prefs when incoming data is non-empty. Stale prefs for
- * agents that genuinely lose all selectors are cleaned up at
- * `selectors_ready` via `clearStalePrefs()`.
+ * Preferences are shipped to the backend at `acp_connect` time (see
+ * `getSavedPrefsForConnect`) which applies them to the agent BEFORE
+ * the initial `session_modes` / `session_config_options` events are
+ * emitted. Snapshots, replays, and live events therefore all carry the
+ * user-preferred values uniformly — there is no client-side "intercept
+ * incoming event and overwrite locally" path.
  */
 
-import type { SessionConfigOptionInfo, SessionModeStateInfo } from "@/lib/types"
+import type { SessionModeStateInfo } from "@/lib/types"
 
 const STORAGE_KEY = "codeg:selector-prefs"
 
 interface SelectorPrefs {
   modeId?: string
-  modesHash?: string
   configValues?: Record<string, string>
-  configHash?: string
 }
 
 type AllPrefs = Record<string, SelectorPrefs>
@@ -51,24 +52,17 @@ function updatePrefs(
   fn: (prefs: SelectorPrefs) => SelectorPrefs
 ) {
   const all = readAll()
-  all[agentType] = fn(all[agentType] ?? {})
+  const existing = all[agentType]
+  // Re-project onto the current schema so legacy fields (`modesHash` /
+  // `configHash` from before the backend took ownership of preference
+  // application) don't survive across writes. Without this an upgrade
+  // user's first save would re-persist the stale hash bytes forever.
+  const normalized: SelectorPrefs = {
+    modeId: existing?.modeId,
+    configValues: existing?.configValues,
+  }
+  all[agentType] = fn(normalized)
   writeAll(all)
-}
-
-// ── Hash helpers ──
-
-function hashModes(modes: SessionModeStateInfo): string {
-  return modes.available_modes.map((m) => m.id).join("\0")
-}
-
-function hashConfigOptions(options: SessionConfigOptionInfo[]): string {
-  return options
-    .map((o) => {
-      if (o.kind.type !== "select") return o.id
-      const vals = o.kind.options.map((v) => v.value).join(",")
-      return `${o.id}:${vals}`
-    })
-    .join("\0")
 }
 
 // ── Read ──
@@ -77,6 +71,33 @@ function hashConfigOptions(options: SessionConfigOptionInfo[]): string {
 export function getSavedModeId(agentType: string): string | null {
   const all = readAll()
   return all[agentType]?.modeId ?? null
+}
+
+/**
+ * Read all saved preferences for an agent. Returned shape mirrors what
+ * the backend `acp_connect` command accepts (`preferred_mode_id` +
+ * `preferred_config_values`). Null/empty fields are normalized so the
+ * call site can pass the result through unchanged.
+ *
+ * The backend applies these on the freshly-attached session before any
+ * `session_modes` / `session_config_options` event is emitted, so the
+ * frontend never needs to "intercept event and overwrite, then sync back".
+ */
+export function getSavedPrefsForConnect(agentType: string): {
+  modeId: string | null
+  configValues: Record<string, string> | null
+} {
+  const all = readAll()
+  const prefs = all[agentType]
+  if (!prefs) return { modeId: null, configValues: null }
+  const configValues =
+    prefs.configValues && Object.keys(prefs.configValues).length > 0
+      ? prefs.configValues
+      : null
+  return {
+    modeId: prefs.modeId ?? null,
+    configValues,
+  }
 }
 
 // ── Save (user actions only) ──
@@ -88,134 +109,16 @@ export function saveModePreference(
   updatePrefs(agentType, (prefs) => ({
     ...prefs,
     modeId: modes.current_mode_id,
-    modesHash: hashModes(modes),
   }))
 }
 
 export function saveConfigPreference(
   agentType: string,
   configId: string,
-  valueId: string,
-  allOptions: SessionConfigOptionInfo[]
+  valueId: string
 ) {
   updatePrefs(agentType, (prefs) => ({
     ...prefs,
     configValues: { ...prefs.configValues, [configId]: valueId },
-    configHash: hashConfigOptions(allOptions),
   }))
-}
-
-// ── Apply (on incoming server events) ──
-
-/**
- * Apply saved mode preference to incoming server modes.
- * Skips empty mode lists (agent still initializing).
- * Clears prefs when structure genuinely changes.
- */
-export function applySavedModePreference(
-  agentType: string,
-  modes: SessionModeStateInfo
-): SessionModeStateInfo {
-  const all = readAll()
-  const prefs = all[agentType]
-  if (!prefs?.modeId || !prefs.modesHash) return modes
-  if (modes.available_modes.length === 0) return modes
-
-  const incomingHash = hashModes(modes)
-  if (prefs.modesHash !== incomingHash) {
-    delete prefs.modeId
-    delete prefs.modesHash
-    all[agentType] = prefs
-    writeAll(all)
-    return modes
-  }
-
-  if (!modes.available_modes.some((m) => m.id === prefs.modeId)) {
-    return modes
-  }
-
-  if (modes.current_mode_id === prefs.modeId) return modes
-
-  return { ...modes, current_mode_id: prefs.modeId! }
-}
-
-/**
- * Apply saved config option preferences to incoming server config options.
- * Skips empty option lists (agent still initializing).
- * Clears prefs when structure genuinely changes.
- */
-export function applySavedConfigPreferences(
-  agentType: string,
-  options: SessionConfigOptionInfo[]
-): SessionConfigOptionInfo[] {
-  const all = readAll()
-  const prefs = all[agentType]
-  if (!prefs?.configValues || !prefs.configHash) return options
-  if (options.length === 0) return options
-
-  const incomingHash = hashConfigOptions(options)
-  if (prefs.configHash !== incomingHash) {
-    delete prefs.configValues
-    delete prefs.configHash
-    all[agentType] = prefs
-    writeAll(all)
-    return options
-  }
-
-  let changed = false
-  const merged = options.map((opt) => {
-    if (opt.kind.type !== "select") return opt
-    const savedValue = prefs.configValues![opt.id]
-    if (!savedValue || savedValue === opt.kind.current_value) return opt
-    if (!opt.kind.options.some((o) => o.value === savedValue)) return opt
-    changed = true
-    return {
-      ...opt,
-      kind: { ...opt.kind, current_value: savedValue },
-    }
-  })
-
-  return changed ? merged : options
-}
-
-// ── Cleanup (called at selectors_ready) ──
-
-/**
- * Called when `selectors_ready` fires — initialization is complete.
- * If the agent ended up with no modes / no config options, clear
- * any stale saved prefs for that category so they don't linger forever.
- */
-export function clearStalePrefs(
-  agentType: string,
-  hasModes: boolean,
-  hasConfigOptions: boolean
-) {
-  const all = readAll()
-  const prefs = all[agentType]
-  if (!prefs) return
-
-  let dirty = false
-  if (!hasModes && (prefs.modeId || prefs.modesHash)) {
-    delete prefs.modeId
-    delete prefs.modesHash
-    dirty = true
-  }
-  if (!hasConfigOptions && (prefs.configValues || prefs.configHash)) {
-    delete prefs.configValues
-    delete prefs.configHash
-    dirty = true
-  }
-  if (!dirty) return
-
-  const isEmpty =
-    !prefs.modeId &&
-    !prefs.modesHash &&
-    !prefs.configValues &&
-    !prefs.configHash
-  if (isEmpty) {
-    delete all[agentType]
-  } else {
-    all[agentType] = prefs
-  }
-  writeAll(all)
 }
