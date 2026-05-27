@@ -1369,6 +1369,7 @@ interface AtomicGuardSnapshot {
     id: string
     content: string
     isDirty: boolean
+    stale: boolean
     saveState?: string
     saveError?: string | null
     etag: string | null | undefined
@@ -1393,6 +1394,7 @@ function ApplyEditRaceProbe({
       id: tab.id,
       content: tab.content,
       isDirty: Boolean(tab.isDirty),
+      stale: Boolean(tab.stale),
       saveState: tab.saveState,
       saveError: tab.saveError ?? null,
       etag: tab.etag,
@@ -1453,6 +1455,7 @@ function RejectEditRaceProbe({
       id: tab.id,
       content: tab.content,
       isDirty: Boolean(tab.isDirty),
+      stale: Boolean(tab.stale),
       saveState: tab.saveState,
       saveError: tab.saveError ?? null,
       etag: tab.etag,
@@ -1548,6 +1551,78 @@ describe("atomic dirty guard in functional updaters", () => {
     expect(tabA?.content).toBe("dirty-local")
     expect(tabA?.saveState).not.toBe("error")
     expect(tabA?.saveError).toBeNull()
+  })
+
+  it("applyExternalReload marks the refused tab stale so the conflict prompt fires without waiting for save", async () => {
+    // Refusing the apply protects the dirty buffer from data loss, but
+    // the user is then editing against disk that has silently diverged.
+    // Marking stale=true wires the dirty refusal into the existing
+    // aux-panel effect (tab.stale && tab.isDirty → announceConflict),
+    // surfacing the divergence immediately instead of at save time.
+    mockedApi.readFileForEdit.mockResolvedValueOnce({
+      path: "a.ts",
+      content: "v1",
+      etag: "e1",
+      mtime_ms: 1,
+      readonly: false,
+      line_ending: "lf",
+    })
+
+    let snap: AtomicGuardSnapshot = { tabs: [] }
+    render(
+      <WorkspaceProvider>
+        <ApplyEditRaceProbe onCapture={(s) => (snap = s)} />
+      </WorkspaceProvider>
+    )
+
+    await act(async () => {
+      screen.getByText("open-a").click()
+    })
+
+    await act(async () => {
+      screen.getByText("edit-and-apply").click()
+    })
+
+    const tabA = snap.tabs.find((t) => t.id === "file:a.ts")
+    expect(tabA?.isDirty).toBe(true)
+    expect(tabA?.stale).toBe(true)
+  })
+
+  it("rejectFileTab marks the refused dirty tab stale for symmetry with applyExternalReload", async () => {
+    // rejectFileTab is normally called from the watcher only after
+    // markTabsStale has already flagged the path, so stale=true here is
+    // usually idempotent. Setting it inside the updater keeps the API
+    // self-consistent: any direct caller that refuses the reject because
+    // of a concurrent keystroke still surfaces divergence via the
+    // existing stale+dirty conflict path, without relying on callers
+    // remembering to call markTabsStale first.
+    mockedApi.readFileForEdit.mockResolvedValueOnce({
+      path: "a.ts",
+      content: "v1",
+      etag: "e1",
+      mtime_ms: 1,
+      readonly: false,
+      line_ending: "lf",
+    })
+
+    let snap: AtomicGuardSnapshot = { tabs: [] }
+    render(
+      <WorkspaceProvider>
+        <RejectEditRaceProbe onCapture={(s) => (snap = s)} />
+      </WorkspaceProvider>
+    )
+
+    await act(async () => {
+      screen.getByText("open-a").click()
+    })
+
+    await act(async () => {
+      screen.getByText("edit-and-reject").click()
+    })
+
+    const tabA = snap.tabs.find((t) => t.id === "file:a.ts")
+    expect(tabA?.isDirty).toBe(true)
+    expect(tabA?.stale).toBe(true)
   })
 })
 

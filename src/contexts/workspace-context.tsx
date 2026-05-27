@@ -721,11 +721,14 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
 
       // Atomic write: refuses the apply if the tab became dirty between
       // our outer existence check and the actual commit (e.g. user typed
-      // in the same React batch as the watcher's apply call).
+      // in the same React batch as the watcher's apply call). The refused
+      // branch flips stale=true so the aux-panel effect (stale && isDirty
+      // → announceConflict) surfaces the divergence immediately instead
+      // of waiting for the next save to discover the etag mismatch.
       setFileTabs((prev) =>
         prev.map((tab) => {
           if (tab.id !== tabId || tab.kind !== "file") return tab
-          if (tab.isDirty) return tab
+          if (tab.isDirty) return { ...tab, stale: true }
           return {
             ...tab,
             content: fetched.content,
@@ -809,7 +812,11 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
       setFileTabs((prev) =>
         prev.map((tab) => {
           if (tab.id !== tabId || tab.kind !== "file") return tab
-          if (tab.isDirty) return tab
+          // Symmetric with applyExternalReload's dirty refusal: surface
+          // the divergence via stale rather than silently no-op. Callers
+          // typically also call markTabsStale, so this is usually
+          // idempotent; the in-updater write protects direct callers.
+          if (tab.isDirty) return { ...tab, stale: true }
           return {
             ...tab,
             content: t("unableLoadContent", { message: errorMessage }),
