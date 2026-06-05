@@ -6,6 +6,9 @@ use crate::db::service::{conversation_service, folder_service, import_service, t
 #[cfg(feature = "tauri-runtime")]
 use crate::db::AppDatabase;
 use crate::models::*;
+use crate::web::event_bridge::{
+    emit_event, ConversationChange, EventEmitter, CONVERSATION_CHANGED_EVENT,
+};
 use crate::parsers::claude::ClaudeParser;
 use crate::parsers::cline::ClineParser;
 use crate::parsers::codex::CodexParser;
@@ -543,6 +546,55 @@ pub async fn get_folder_conversation(
     get_folder_conversation_core(&db.conn, conversation_id).await
 }
 
+/// Emit a `conversation://changed` Upsert for `conversation_id` so every
+/// client's sidebar inserts-or-replaces the row in real time. Re-fetches the
+/// fresh summary via `get_by_id`, which filters out soft-deleted rows — so an
+/// upsert racing a delete is silently dropped (no row resurrection).
+/// Best-effort: the DB write already succeeded; on fetch failure clients
+/// reconcile on the next refresh / WS reconnect.
+///
+/// Lives at the wrapper layer (not inside the `_core` fns) so the many
+/// internal/test callers of `create_conversation_core` don't fire sidebar
+/// events, and so `_core` stays a pure DB primitive.
+pub(crate) async fn emit_conversation_upsert(
+    emitter: &EventEmitter,
+    conn: &sea_orm::DatabaseConnection,
+    conversation_id: i32,
+) {
+    match conversation_service::get_by_id(conn, conversation_id).await {
+        Ok(summary) => {
+            // Sidebar shows ROOT conversations only — never broadcast a
+            // delegation child. The frontend also filters `parent_id != null`;
+            // this is the backend half of that invariant, so callers on agent
+            // paths (e.g. SessionStarted) can hand us any id without leaking
+            // child rows into every client's list.
+            if summary.parent_id.is_some() {
+                return;
+            }
+            emit_event(
+                emitter,
+                CONVERSATION_CHANGED_EVENT,
+                ConversationChange::Upsert { summary },
+            )
+        }
+        Err(e) => eprintln!(
+            "[conversations] upsert emit skipped (get_by_id {conversation_id} failed): {e}"
+        ),
+    }
+}
+
+/// Emit a `conversation://changed` Deleted for `conversation_id` so every
+/// client removes the row. No re-fetch: the row is already soft-deleted.
+pub(crate) fn emit_conversation_deleted(emitter: &EventEmitter, conversation_id: i32) {
+    emit_event(
+        emitter,
+        CONVERSATION_CHANGED_EVENT,
+        ConversationChange::Deleted {
+            id: conversation_id,
+        },
+    );
+}
+
 /// Core logic for creating a conversation with git branch detection.
 /// Shared by both the Tauri command and the web handler.
 pub async fn create_conversation_core(
@@ -569,12 +621,15 @@ pub async fn create_conversation_core(
 #[cfg(feature = "tauri-runtime")]
 #[cfg_attr(feature = "tauri-runtime", tauri::command)]
 pub async fn create_conversation(
+    app: tauri::AppHandle,
     db: tauri::State<'_, AppDatabase>,
     folder_id: i32,
     agent_type: AgentType,
     title: Option<String>,
 ) -> Result<i32, AppCommandError> {
-    create_conversation_core(&db.conn, folder_id, agent_type, title).await
+    let id = create_conversation_core(&db.conn, folder_id, agent_type, title).await?;
+    emit_conversation_upsert(&EventEmitter::Tauri(app), &db.conn, id).await;
+    Ok(id)
 }
 
 async fn detect_git_branch(path: &str) -> Option<String> {
@@ -613,11 +668,14 @@ pub async fn update_conversation_status_core(
 #[cfg(feature = "tauri-runtime")]
 #[cfg_attr(feature = "tauri-runtime", tauri::command)]
 pub async fn update_conversation_status(
+    app: tauri::AppHandle,
     db: tauri::State<'_, AppDatabase>,
     conversation_id: i32,
     status: String,
 ) -> Result<(), AppCommandError> {
-    update_conversation_status_core(&db.conn, conversation_id, status).await
+    update_conversation_status_core(&db.conn, conversation_id, status).await?;
+    emit_conversation_upsert(&EventEmitter::Tauri(app), &db.conn, conversation_id).await;
+    Ok(())
 }
 
 pub async fn update_conversation_title_core(
@@ -633,11 +691,14 @@ pub async fn update_conversation_title_core(
 #[cfg(feature = "tauri-runtime")]
 #[cfg_attr(feature = "tauri-runtime", tauri::command)]
 pub async fn update_conversation_title(
+    app: tauri::AppHandle,
     db: tauri::State<'_, AppDatabase>,
     conversation_id: i32,
     title: String,
 ) -> Result<(), AppCommandError> {
-    update_conversation_title_core(&db.conn, conversation_id, title).await
+    update_conversation_title_core(&db.conn, conversation_id, title).await?;
+    emit_conversation_upsert(&EventEmitter::Tauri(app), &db.conn, conversation_id).await;
+    Ok(())
 }
 
 pub async fn delete_conversation_core(
@@ -652,10 +713,13 @@ pub async fn delete_conversation_core(
 #[cfg(feature = "tauri-runtime")]
 #[cfg_attr(feature = "tauri-runtime", tauri::command)]
 pub async fn delete_conversation(
+    app: tauri::AppHandle,
     db: tauri::State<'_, AppDatabase>,
     conversation_id: i32,
 ) -> Result<(), AppCommandError> {
-    delete_conversation_core(&db.conn, conversation_id).await
+    delete_conversation_core(&db.conn, conversation_id).await?;
+    emit_conversation_deleted(&EventEmitter::Tauri(app), conversation_id);
+    Ok(())
 }
 
 fn compute_stats(all_conversations: &[ConversationSummary]) -> AgentStats {
@@ -1196,5 +1260,127 @@ mod tests {
         assert!(rows.iter().all(|r| r.parent_id == Some(parent_id)));
         // Oldest-first ordering (created_at ascending).
         assert!(rows[0].created_at <= rows[1].created_at);
+    }
+
+    // ──────────────────────────────────────────────────────────────────────
+    // Phase 1 — cross-client list/status sync. The wrapper-layer emit helpers
+    // broadcast `conversation://changed` so every client's sidebar stays in
+    // sync regardless of which transport made the change. Drive the helpers
+    // directly against a test broadcaster and assert the emitted JSON.
+    // ──────────────────────────────────────────────────────────────────────
+
+    fn sync_test_emitter() -> (
+        std::sync::Arc<crate::web::event_bridge::WebEventBroadcaster>,
+        EventEmitter,
+    ) {
+        let broadcaster =
+            std::sync::Arc::new(crate::web::event_bridge::WebEventBroadcaster::new());
+        let emitter = EventEmitter::test_web_only(broadcaster.clone());
+        (broadcaster, emitter)
+    }
+
+    #[tokio::test]
+    async fn emit_conversation_upsert_broadcasts_full_root_summary() {
+        let db = fresh_in_memory_db().await;
+        let folder_id = seed_folder(&db, "/tmp/codeg-sync-upsert").await;
+        let id = create_conversation_core(&db.conn, folder_id, AgentType::ClaudeCode, None)
+            .await
+            .expect("create");
+        let (broadcaster, emitter) = sync_test_emitter();
+        let mut rx = broadcaster.subscribe();
+        emit_conversation_upsert(&emitter, &db.conn, id).await;
+        let evt = rx.try_recv().expect("upsert should broadcast");
+        let p = &*evt.payload;
+        assert_eq!(evt.channel, CONVERSATION_CHANGED_EVENT);
+        assert_eq!(p["kind"], "upsert");
+        assert_eq!(p["summary"]["id"], id);
+        // Root conversation → parent_id omitted (serde skip_serializing_if), so
+        // the frontend keeps it in the sidebar.
+        assert!(
+            p["summary"].get("parent_id").is_none(),
+            "root summary must omit parent_id"
+        );
+    }
+
+    #[tokio::test]
+    async fn emit_conversation_deleted_broadcasts_id_only() {
+        let (broadcaster, emitter) = sync_test_emitter();
+        let mut rx = broadcaster.subscribe();
+        emit_conversation_deleted(&emitter, 4242);
+        let evt = rx.try_recv().expect("deleted should broadcast");
+        let p = &*evt.payload;
+        assert_eq!(evt.channel, CONVERSATION_CHANGED_EVENT);
+        assert_eq!(p["kind"], "deleted");
+        assert_eq!(p["id"], 4242);
+    }
+
+    #[tokio::test]
+    async fn emit_conversation_upsert_carries_new_status_after_update() {
+        let db = fresh_in_memory_db().await;
+        let folder_id = seed_folder(&db, "/tmp/codeg-sync-status").await;
+        let id = create_conversation_core(&db.conn, folder_id, AgentType::Codex, None)
+            .await
+            .expect("create");
+        update_conversation_status_core(&db.conn, id, "pending_review".to_string())
+            .await
+            .expect("status update");
+        let (broadcaster, emitter) = sync_test_emitter();
+        let mut rx = broadcaster.subscribe();
+        emit_conversation_upsert(&emitter, &db.conn, id).await;
+        let evt = rx.try_recv().expect("upsert should broadcast");
+        assert_eq!(evt.payload["summary"]["status"], "pending_review");
+    }
+
+    #[tokio::test]
+    async fn emit_conversation_upsert_on_soft_deleted_row_is_silent() {
+        // Anti-resurrection: get_by_id filters deleted_at, so an upsert that
+        // races a delete emits nothing instead of re-inserting a tombstone.
+        let db = fresh_in_memory_db().await;
+        let folder_id = seed_folder(&db, "/tmp/codeg-sync-deleted-silent").await;
+        let id = create_conversation_core(&db.conn, folder_id, AgentType::Gemini, None)
+            .await
+            .expect("create");
+        delete_conversation_core(&db.conn, id).await.expect("delete");
+        let (broadcaster, emitter) = sync_test_emitter();
+        let mut rx = broadcaster.subscribe();
+        emit_conversation_upsert(&emitter, &db.conn, id).await;
+        assert!(
+            rx.try_recv().is_err(),
+            "upsert for a soft-deleted row must not broadcast (no resurrection)"
+        );
+    }
+
+    #[tokio::test]
+    async fn emit_conversation_upsert_skips_delegation_child() {
+        // The sidebar shows root conversations only. A delegation child id
+        // handed to the helper (e.g. from the SessionStarted path) must not
+        // broadcast a sidebar upsert.
+        use crate::acp::delegation::spawner::DelegationLink;
+        let db = fresh_in_memory_db().await;
+        let folder_id = seed_folder(&db, "/tmp/codeg-sync-child-skip").await;
+        let parent_id = create_conversation_core(&db.conn, folder_id, AgentType::ClaudeCode, None)
+            .await
+            .expect("parent");
+        let child = conversation_service::create_with_delegation(
+            &db.conn,
+            folder_id,
+            AgentType::Codex,
+            Some("child".into()),
+            None,
+            Some(DelegationLink {
+                parent_conversation_id: parent_id,
+                parent_tool_use_id: "tu-1".into(),
+                delegation_call_id: "call-1".into(),
+            }),
+        )
+        .await
+        .expect("child");
+        let (broadcaster, emitter) = sync_test_emitter();
+        let mut rx = broadcaster.subscribe();
+        emit_conversation_upsert(&emitter, &db.conn, child.id).await;
+        assert!(
+            rx.try_recv().is_err(),
+            "delegation child must not broadcast a sidebar upsert"
+        );
     }
 }

@@ -13,6 +13,12 @@ interface UseConnectionLifecycleOptions {
   isActive: boolean
   workingDir?: string
   sessionId?: string
+  /**
+   * Persisted conversation id (when known). Passed to `connect()` so it can
+   * discover and attach to a live connection another client already owns
+   * (cross-client viewing) instead of always spawning a fresh agent.
+   */
+  conversationId?: number
 }
 
 export interface UseConnectionLifecycleReturn {
@@ -25,7 +31,11 @@ export interface UseConnectionLifecycleReturn {
   handleSend: (
     draft: PromptDraft,
     modeId?: string | null,
-    opts?: { folderId?: number | null; conversationId?: number | null }
+    opts?: {
+      folderId?: number | null
+      conversationId?: number | null
+      clientMessageId?: string | null
+    }
   ) => void
   handleSetConfigOption: (configId: string, valueId: string) => void
   handleCancel: () => void
@@ -48,6 +58,7 @@ export function useConnectionLifecycle({
   isActive,
   workingDir,
   sessionId,
+  conversationId,
 }: UseConnectionLifecycleOptions): UseConnectionLifecycleReturn {
   const t = useTranslations("Folder.chat.connectionLifecycle")
   const { setActiveKey, touchActivity } = useAcpActions()
@@ -115,6 +126,10 @@ export function useConnectionLifecycle({
   useEffect(() => {
     sessionIdRef.current = sessionId
   }, [sessionId])
+  const conversationIdRef = useRef(conversationId)
+  useEffect(() => {
+    conversationIdRef.current = conversationId
+  }, [conversationId])
   const modeIdRef = useRef<string | null>(modes?.current_mode_id ?? null)
   useEffect(() => {
     modeIdRef.current = modes?.current_mode_id ?? null
@@ -140,7 +155,12 @@ export function useConnectionLifecycle({
     if (!workingDir) return
     let cancelled = false
     connConnectRef
-      .current(agentType, workingDir, sessionIdRef.current)
+      .current(
+        agentType,
+        workingDir,
+        sessionIdRef.current,
+        conversationIdRef.current
+      )
       .then(() => {
         if (!cancelled) {
           setLastAutoConnectError(null)
@@ -271,17 +291,20 @@ export function useConnectionLifecycle({
     touchActivity(contextKey)
     if (!status || status === "disconnected" || status === "error") {
       setLastAutoConnectError(null)
-      connConnect(agentType, workingDir, sessionId).catch((e: unknown) => {
-        if (!isExpectedConnectError(e)) {
-          console.error("[ConnLifecycle] connect:", e)
+      connConnect(agentType, workingDir, sessionId, conversationId).catch(
+        (e: unknown) => {
+          if (!isExpectedConnectError(e)) {
+            console.error("[ConnLifecycle] connect:", e)
+          }
         }
-      })
+      )
     }
   }, [
     isActive,
     agentType,
     workingDir,
     sessionId,
+    conversationId,
     status,
     connConnect,
     contextKey,
@@ -302,7 +325,11 @@ export function useConnectionLifecycle({
     (
       draft: PromptDraft,
       modeId?: string | null,
-      opts?: { folderId?: number | null; conversationId?: number | null }
+      opts?: {
+        folderId?: number | null
+        conversationId?: number | null
+        clientMessageId?: string | null
+      }
     ) => {
       touchActivity(contextKey)
       void (async () => {

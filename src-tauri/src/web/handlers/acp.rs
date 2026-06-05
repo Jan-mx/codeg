@@ -134,6 +134,8 @@ pub struct AcpPromptParams {
     pub blocks: Vec<crate::acp::types::PromptInputBlock>,
     pub folder_id: Option<i32>,
     pub conversation_id: Option<i32>,
+    #[serde(default)]
+    pub client_message_id: Option<String>,
 }
 
 pub async fn acp_prompt(
@@ -142,13 +144,14 @@ pub async fn acp_prompt(
 ) -> Result<Json<()>, AppCommandError> {
     state
         .connection_manager
-        .send_prompt_linked(
+        .send_prompt_linked_with_message_id(
             &state.db,
             &params.connection_id,
             params.blocks,
             params.folder_id,
             params.conversation_id,
             None,
+            params.client_message_id,
         )
         .await
         .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))?;
@@ -430,6 +433,25 @@ pub async fn acp_get_session_snapshot_by_conversation(
     .await
     .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))?;
     Ok(Json(snap))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AcpFindConnectionForConversationParams {
+    pub conversation_id: i32,
+}
+
+pub async fn acp_find_connection_for_conversation(
+    Extension(state): Extension<Arc<AppState>>,
+    Json(params): Json<AcpFindConnectionForConversationParams>,
+) -> Result<Json<Option<crate::acp::ConversationConnectionInfo>>, AppCommandError> {
+    let info = acp_commands::acp_find_connection_for_conversation_core(
+        &state.connection_manager,
+        params.conversation_id,
+    )
+    .await
+    .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))?;
+    Ok(Json(info))
 }
 
 // --- Pattern B+: Core function handlers ---

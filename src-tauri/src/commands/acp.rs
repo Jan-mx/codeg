@@ -15,7 +15,7 @@ use crate::acp::preflight::{self, PreflightResult};
 use crate::acp::registry;
 use crate::acp::types::{
     AcpAgentInfo, AgentSkillContent, AgentSkillItem, AgentSkillLayout, AgentSkillLocation,
-    AgentSkillScope, AgentSkillsListResult,
+    AgentSkillScope, AgentSkillsListResult, ConnectionStatus,
 };
 #[cfg(feature = "tauri-runtime")]
 use crate::acp::types::{ConnectionInfo, ForkResultInfo, PromptInputBlock};
@@ -2560,17 +2560,19 @@ pub async fn acp_prompt(
     blocks: Vec<PromptInputBlock>,
     folder_id: Option<i32>,
     conversation_id: Option<i32>,
+    client_message_id: Option<String>,
     db: State<'_, crate::db::AppDatabase>,
     manager: State<'_, ConnectionManager>,
 ) -> Result<(), AcpError> {
     manager
-        .send_prompt_linked(
+        .send_prompt_linked_with_message_id(
             &db,
             &connection_id,
             blocks,
             folder_id,
             conversation_id,
             None,
+            client_message_id,
         )
         .await
         .map(|_| ())
@@ -2743,6 +2745,57 @@ pub async fn acp_get_session_snapshot_by_conversation(
     manager: State<'_, ConnectionManager>,
 ) -> Result<Option<crate::acp::LiveSessionSnapshot>, AcpError> {
     acp_get_session_snapshot_by_conversation_core(&manager, conversation_id).await
+}
+
+/// Discover the live connection (if any) currently bound to `conversation_id`,
+/// returning its id plus the current `event_seq` (informational). The frontend
+/// calls this when opening a conversation: if `Some`, it attaches to that
+/// connection as a viewer (cross-client live streaming) instead of spawning a
+/// fresh agent; if `None`, no client is live on the conversation and it
+/// spawns/owns one. Reuses `find_connection_by_conversation_id`.
+pub(crate) async fn acp_find_connection_for_conversation_core(
+    manager: &ConnectionManager,
+    conversation_id: i32,
+) -> Result<Option<crate::acp::ConversationConnectionInfo>, AcpError> {
+    let Some(connection_id) = manager
+        .find_connection_by_conversation_id(conversation_id)
+        .await
+    else {
+        return Ok(None);
+    };
+    // The connection may be GC'd between the lookup and the state read; treat a
+    // missing state as "no live connection" rather than erroring.
+    let Some(state) = manager.get_state(&connection_id).await else {
+        return Ok(None);
+    };
+    let s = state.read().await;
+    // Discovery means "a LIVE connection a viewer can attach to". Teardown
+    // writes a terminal status onto the state BEFORE the cleanup hook removes
+    // the map entry (see `acp/connection.rs`), and `find_connection_by_
+    // conversation_id` only matches `conversation_id` — so without this guard
+    // discovery can briefly hand back a connection that is going away, and the
+    // viewer would attach to a dead stream. Treat terminal statuses as "no live
+    // connection" (matching `find_connection_for_reuse`'s contract) so the
+    // client reads the persisted detail instead.
+    if matches!(
+        s.status,
+        ConnectionStatus::Disconnected | ConnectionStatus::Error
+    ) {
+        return Ok(None);
+    }
+    Ok(Some(crate::acp::ConversationConnectionInfo {
+        connection_id,
+        event_seq: s.event_seq,
+    }))
+}
+
+#[cfg(feature = "tauri-runtime")]
+#[cfg_attr(feature = "tauri-runtime", tauri::command)]
+pub async fn acp_find_connection_for_conversation(
+    conversation_id: i32,
+    manager: State<'_, ConnectionManager>,
+) -> Result<Option<crate::acp::ConversationConnectionInfo>, AcpError> {
+    acp_find_connection_for_conversation_core(&manager, conversation_id).await
 }
 
 pub(crate) async fn acp_get_agent_status_core(
@@ -4191,6 +4244,80 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("codeg-acp-{name}-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).expect("create test directory");
         dir
+    }
+
+    #[tokio::test]
+    async fn find_connection_for_conversation_core_returns_info_when_bound() {
+        // A live connection bound to the conversation → discovery returns its
+        // id plus the current event_seq (informational; the viewer cold-attaches
+        // with a full snapshot, not a cursor replay).
+        use crate::acp::manager::ConnectionManager;
+        use crate::models::AgentType;
+        use crate::web::event_bridge::EventEmitter;
+
+        let mgr = ConnectionManager::new();
+        mgr.insert_test_connection("c1", AgentType::ClaudeCode, None, EventEmitter::Noop)
+            .await;
+        {
+            let state = mgr.get_state("c1").await.expect("state present");
+            let mut s = state.write().await;
+            s.conversation_id = Some(42);
+            s.event_seq = 7;
+        }
+
+        let info = acp_find_connection_for_conversation_core(&mgr, 42)
+            .await
+            .expect("ok")
+            .expect("a live connection is bound to conversation 42");
+        assert_eq!(info.connection_id, "c1");
+        assert_eq!(info.event_seq, 7);
+    }
+
+    #[tokio::test]
+    async fn find_connection_for_conversation_core_none_when_unbound() {
+        // No live connection owns the conversation → None (the client spawns +
+        // owns one instead of attaching as a viewer).
+        use crate::acp::manager::ConnectionManager;
+        use crate::models::AgentType;
+        use crate::web::event_bridge::EventEmitter;
+
+        let mgr = ConnectionManager::new();
+        mgr.insert_test_connection("c1", AgentType::ClaudeCode, None, EventEmitter::Noop)
+            .await;
+        assert!(acp_find_connection_for_conversation_core(&mgr, 999)
+            .await
+            .expect("ok")
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn find_connection_for_conversation_core_none_when_terminal_status() {
+        // A connection bound to the conversation but already in a terminal
+        // status (teardown wrote it before the map entry was removed) is NOT a
+        // live attach target → None, so the viewer reads persisted detail
+        // instead of attaching to a dying stream.
+        use crate::acp::manager::ConnectionManager;
+        use crate::models::AgentType;
+        use crate::web::event_bridge::EventEmitter;
+
+        for terminal in [ConnectionStatus::Disconnected, ConnectionStatus::Error] {
+            let mgr = ConnectionManager::new();
+            mgr.insert_test_connection("c1", AgentType::ClaudeCode, None, EventEmitter::Noop)
+                .await;
+            {
+                let state = mgr.get_state("c1").await.expect("state present");
+                let mut s = state.write().await;
+                s.conversation_id = Some(42);
+                s.status = terminal.clone();
+            }
+            assert!(
+                acp_find_connection_for_conversation_core(&mgr, 42)
+                    .await
+                    .expect("ok")
+                    .is_none(),
+                "terminal status {terminal:?} must not be returned as a live connection"
+            );
+        }
     }
 
     #[test]

@@ -513,6 +513,10 @@ pub fn build_router(
             post(handlers::acp::acp_get_session_snapshot_by_conversation),
         )
         .route(
+            "/acp_find_connection_for_conversation",
+            post(handlers::acp::acp_find_connection_for_conversation),
+        )
+        .route(
             "/acp_clear_binary_cache",
             post(handlers::acp::acp_clear_binary_cache),
         )

@@ -173,6 +173,8 @@ function makeConnState(overrides: Partial<ConnectionState>): ConnectionState {
     isDelegationChild: true,
     parentToolUseId: "pt-1",
     parentConnectionId: "p1",
+    isViewer: false,
+    pendingUserMessage: null,
     ...overrides,
   }
 }

@@ -241,6 +241,54 @@ pub enum AcpEvent {
         agent_type: crate::models::agent::AgentType,
         result: DelegationResultSummary,
     },
+    /// The user's submitted prompt, broadcast on the connection stream so OTHER
+    /// clients viewing this conversation can synthesize the user turn in real
+    /// time. The sending client adds its own optimistic turn and ignores this
+    /// echo (it dedups against having an in-flight optimistic turn). Also
+    /// captured into `SessionState.pending_user_message` so a client attaching
+    /// mid-turn receives it in the snapshot. Emitted only for root sends
+    /// (delegation children synthesize their kickoff text separately).
+    UserMessage {
+        message_id: String,
+        blocks: Vec<UserMessageBlock>,
+    },
+}
+
+/// A block of the user's submitted prompt, broadcast via [`AcpEvent::UserMessage`]
+/// and stored in the live snapshot. Intentionally narrower than
+/// [`PromptInputBlock`]: only what a viewer needs to render the user turn.
+/// `Resource` / `ResourceLink` prompt blocks are folded into `Text` markdown
+/// links by [`user_blocks_from_prompt`].
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum UserMessageBlock {
+    Text { text: String },
+    Image { data: String, mime_type: String },
+}
+
+/// Project the wire `PromptInputBlock`s the sender submitted into the lean
+/// [`UserMessageBlock`]s broadcast to viewers: text and images pass through;
+/// resources/resource-links collapse to a `[label](uri)` markdown line so a
+/// viewer still sees what was attached without shipping blob bytes twice.
+pub fn user_blocks_from_prompt(blocks: &[PromptInputBlock]) -> Vec<UserMessageBlock> {
+    blocks
+        .iter()
+        .map(|b| match b {
+            PromptInputBlock::Text { text } => UserMessageBlock::Text { text: text.clone() },
+            PromptInputBlock::Image {
+                data, mime_type, ..
+            } => UserMessageBlock::Image {
+                data: data.clone(),
+                mime_type: mime_type.clone(),
+            },
+            PromptInputBlock::Resource { uri, .. } => UserMessageBlock::Text {
+                text: format!("[{uri}]({uri})"),
+            },
+            PromptInputBlock::ResourceLink { uri, name, .. } => UserMessageBlock::Text {
+                text: format!("[{name}]({uri})"),
+            },
+        })
+        .collect()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -353,6 +401,18 @@ pub struct ConnectionInfo {
     pub id: String,
     pub agent_type: crate::models::agent::AgentType,
     pub status: ConnectionStatus,
+}
+
+/// The live connection currently bound to a conversation, returned by
+/// `acp_find_connection_for_conversation`. The endpoint returns `None` when no
+/// live connection owns the conversation (the client reads the persisted detail
+/// instead of attaching). `event_seq` is the connection's progress at discovery
+/// time — informational only; the viewer always does a COLD snapshot attach
+/// (no cursor), since it has applied no prior events.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConversationConnectionInfo {
+    pub connection_id: String,
+    pub event_seq: u64,
 }
 
 #[derive(Debug, Clone, Serialize)]

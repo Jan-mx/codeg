@@ -505,6 +505,11 @@ impl ConnectionManager {
     ///
     /// Subsequent calls (when state is already linked) ignore both
     /// `folder_id` and `conversation_id` and just forward the prompt.
+    ///
+    /// Back-compat wrapper for callers that don't supply a client message id
+    /// (the delegation broker, internal/test paths). The UI send path uses
+    /// [`send_prompt_linked_with_message_id`] so the sender's optimistic turn
+    /// dedups against the broadcast `UserMessage` echo by exact id.
     pub async fn send_prompt_linked(
         &self,
         db: &AppDatabase,
@@ -513,6 +518,37 @@ impl ConnectionManager {
         folder_id: Option<i32>,
         conversation_id: Option<i32>,
         delegation: Option<crate::acp::delegation::spawner::DelegationLink>,
+    ) -> Result<Option<i32>, AcpError> {
+        self.send_prompt_linked_with_message_id(
+            db,
+            conn_id,
+            blocks,
+            folder_id,
+            conversation_id,
+            delegation,
+            None,
+        )
+        .await
+    }
+
+    /// As [`send_prompt_linked`], plus an optional `client_message_id`: the
+    /// id the sending UI assigned to its own optimistic user turn. When the
+    /// user prompt is broadcast as [`AcpEvent::UserMessage`] (for cross-client
+    /// viewers), this id becomes the event's `message_id`, so the sender's
+    /// runtime dedups the echo against its optimistic turn by EXACT id rather
+    /// than a heuristic — and an unrelated optimistic turn on another client
+    /// never suppresses a different sender's prompt. `None` falls back to a
+    /// connection-scoped id for non-UI senders.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn send_prompt_linked_with_message_id(
+        &self,
+        db: &AppDatabase,
+        conn_id: &str,
+        blocks: Vec<PromptInputBlock>,
+        folder_id: Option<i32>,
+        conversation_id: Option<i32>,
+        delegation: Option<crate::acp::delegation::spawner::DelegationLink>,
+        client_message_id: Option<String>,
     ) -> Result<Option<i32>, AcpError> {
         // Caller-supplied conversation_id requires folder_id (we include it in
         // the emitted ConversationLinked event so subscribers don't have to
@@ -615,6 +651,18 @@ impl ConnectionManager {
                         },
                     )
                     .await;
+                    // Sidebar sync: a ROOT conversation born here (agent path —
+                    // a prompt sent without a pre-created row, not the create
+                    // button) must appear in every client's list immediately,
+                    // via the global `conversation://changed` channel. Delegation
+                    // children (parent set) are excluded — they aren't sidebar
+                    // rows.
+                    if delegation.is_none() {
+                        crate::commands::conversations::emit_conversation_upsert(
+                            &emitter, &db.conn, row.id,
+                        )
+                        .await;
+                    }
                 }
                 (None, None) => {
                     return Err(AcpError::protocol(
@@ -639,6 +687,14 @@ impl ConnectionManager {
                 conversation_service::update_external_id(&db.conn, cid, eid)
                     .await
                     .map_err(|e| AcpError::protocol(e.to_string()))?;
+                // SessionStarted arrived BEFORE this link, so the lifecycle
+                // subscriber skipped its broadcast (no conversation_id then).
+                // Now that external_id is persisted, converge every client's
+                // sidebar with the complete summary — this also corrects a
+                // Branch B upsert above that necessarily carried
+                // `external_id: null`. Root-only via the helper.
+                crate::commands::conversations::emit_conversation_upsert(&emitter, &db.conn, cid)
+                    .await;
             } else if cid_opt.is_some() {
                 eprintln!(
                     "[manager] send_prompt_linked: conversation linked but \
@@ -673,6 +729,32 @@ impl ConnectionManager {
             .await;
         }
 
+        // Project the user's prompt blocks for the cross-client viewer
+        // broadcast BEFORE `send_prompt_inner` consumes `blocks`. The broadcast
+        // itself is deferred until AFTER a successful enqueue (below): a failed
+        // enqueue rolls the row back to `Cancelled` with no `TurnComplete`, so
+        // emitting here would strand a stale `pending_user_message` in the
+        // snapshot and an unpromotable viewer-synthesized user turn. Gated on
+        // `delegation.is_none()` (children surface kickoff text separately) and
+        // a bound conversation row (a sidebar-visible turn). The `message_id`
+        // prefers the sender's client-supplied id (exact echo dedup), falling
+        // back to a connection-scoped id for non-UI senders.
+        let pending_user_broadcast: Option<(String, Vec<crate::acp::UserMessageBlock>)> =
+            if delegation.is_none() && conversation_id_for_status.is_some() {
+                let user_blocks = crate::acp::user_blocks_from_prompt(&blocks);
+                if user_blocks.is_empty() {
+                    None
+                } else {
+                    let message_id = match client_message_id {
+                        Some(id) => id,
+                        None => format!("user-{}-{}", conn_id, state_arc.read().await.event_seq),
+                    };
+                    Some((message_id, user_blocks))
+                }
+            } else {
+                None
+            };
+
         // We hold `_prompt_guard` here, so call the lock-free inner helper —
         // re-entering `send_prompt` would try to acquire the same mutex and
         // deadlock. On failure (channel closed, process exited), flip the
@@ -682,7 +764,20 @@ impl ConnectionManager {
         // PendingReview write also never fires — the row would be stuck
         // until a follow-up `send_prompt_linked` happened to re-flip it.
         match self.send_prompt_inner(conn_id, blocks).await {
-            Ok(()) => Ok(conversation_id_for_status),
+            Ok(()) => {
+                // Enqueue succeeded — NOW broadcast the user prompt to viewers
+                // and capture it in the snapshot. Deferred from before the send
+                // so a failed enqueue never strands pending_user_message.
+                if let Some((message_id, blocks)) = pending_user_broadcast {
+                    emit_with_state(
+                        &state_arc,
+                        &emitter,
+                        AcpEvent::UserMessage { message_id, blocks },
+                    )
+                    .await;
+                }
+                Ok(conversation_id_for_status)
+            }
             Err(send_err) => {
                 if let Some(cid) = conversation_id_for_status {
                     match conversation_service::update_status(
@@ -1486,6 +1581,277 @@ mod tests {
         (*evt).clone()
     }
 
+    /// Drain a per-connection stream (non-blocking) and collect each
+    /// `UserMessage` event seen as `(message_id, text blocks)`. Call after the
+    /// producing await.
+    fn drain_user_messages(
+        rx: &mut broadcast::Receiver<std::sync::Arc<crate::acp::types::EventEnvelope>>,
+    ) -> Vec<(String, Vec<String>)> {
+        let mut out = Vec::new();
+        while let Ok(evt) = rx.try_recv() {
+            if let AcpEvent::UserMessage { message_id, blocks } = &evt.payload {
+                let texts = blocks
+                    .iter()
+                    .filter_map(|b| match b {
+                        crate::acp::types::UserMessageBlock::Text { text } => Some(text.clone()),
+                        _ => None,
+                    })
+                    .collect();
+                out.push((message_id.clone(), texts));
+            }
+        }
+        out
+    }
+
+    /// Insert a connection with a LIVE command receiver so `send_prompt_inner`'s
+    /// enqueue SUCCEEDS (the UserMessage broadcast is deferred until after a
+    /// successful enqueue). Returns the receiver — keep it in scope for the
+    /// test, otherwise the channel closes and the send fails.
+    async fn insert_live_connection(
+        mgr: &ConnectionManager,
+        conn_id: &str,
+        agent_type: AgentType,
+        working_dir: Option<PathBuf>,
+    ) -> tokio::sync::mpsc::Receiver<crate::acp::connection::ConnectionCommand> {
+        use crate::acp::connection::AgentConnection;
+        use crate::acp::session_state::SessionState;
+        let (tx, rx) = mpsc::channel::<crate::acp::connection::ConnectionCommand>(4);
+        let mut state = SessionState::new(
+            conn_id.to_string(),
+            agent_type,
+            working_dir,
+            "test-window".to_string(),
+            None,
+        );
+        state.status = ConnectionStatus::Connected;
+        let conn = AgentConnection {
+            id: conn_id.to_string(),
+            agent_type,
+            status: ConnectionStatus::Connected,
+            owner_window_label: "test-window".to_string(),
+            cmd_tx: tx,
+            state: Arc::new(RwLock::new(state)),
+            emitter: EventEmitter::Noop,
+            prompt_lock: Arc::new(tokio::sync::Mutex::new(())),
+        };
+        mgr.connections
+            .lock()
+            .await
+            .insert(conn_id.to_string(), conn);
+        rx
+    }
+
+    #[tokio::test]
+    async fn send_prompt_linked_broadcasts_user_message_for_root() {
+        // A root send broadcasts the user's prompt on the connection stream (so
+        // viewers synthesize the user turn) and captures it on the live state
+        // (so mid-turn attachers see it in the snapshot) — but ONLY after the
+        // enqueue succeeds (a live cmd receiver keeps the send from failing).
+        use crate::db::test_helpers;
+        let db = test_helpers::fresh_in_memory_db().await;
+        let folder_id = test_helpers::seed_folder(&db, "/tmp/um-root").await;
+        let mgr = ConnectionManager::new();
+        let conn_id = "conn-um-root";
+        let _cmd_rx = insert_live_connection(
+            &mgr,
+            conn_id,
+            AgentType::ClaudeCode,
+            Some(PathBuf::from("/tmp/um-root")),
+        )
+        .await;
+        let mut rx = subscribe_conn_stream(&mgr, conn_id).await;
+
+        let result = mgr
+            .send_prompt_linked(
+                &db,
+                conn_id,
+                vec![PromptInputBlock::Text {
+                    text: "hello viewers".into(),
+                }],
+                Some(folder_id),
+                None,
+                None,
+            )
+            .await;
+        assert!(result.is_ok(), "enqueue should succeed with a live receiver");
+
+        let msgs = drain_user_messages(&mut rx);
+        assert!(
+            msgs.iter()
+                .any(|(_, texts)| texts.iter().any(|t| t == "hello viewers")),
+            "root send must broadcast a user_message after a successful enqueue, got {msgs:?}"
+        );
+        let pending = mgr
+            .get_state(conn_id)
+            .await
+            .unwrap()
+            .read()
+            .await
+            .pending_user_message
+            .clone();
+        assert!(
+            pending.expect("pending captured").message_id.starts_with("user-"),
+            "live state captures the pending user message (connection-scoped id fallback)"
+        );
+    }
+
+    #[tokio::test]
+    async fn send_prompt_linked_uses_client_message_id_for_user_message() {
+        // The UI threads its optimistic turn id as `client_message_id`; the
+        // broadcast UserMessage must carry it verbatim so the sender dedups its
+        // own echo by exact id (not a heuristic).
+        use crate::db::test_helpers;
+        let db = test_helpers::fresh_in_memory_db().await;
+        let folder_id = test_helpers::seed_folder(&db, "/tmp/um-cmid").await;
+        let mgr = ConnectionManager::new();
+        let conn_id = "conn-um-cmid";
+        let _cmd_rx = insert_live_connection(
+            &mgr,
+            conn_id,
+            AgentType::ClaudeCode,
+            Some(PathBuf::from("/tmp/um-cmid")),
+        )
+        .await;
+        let mut rx = subscribe_conn_stream(&mgr, conn_id).await;
+
+        mgr.send_prompt_linked_with_message_id(
+            &db,
+            conn_id,
+            vec![PromptInputBlock::Text { text: "hi".into() }],
+            Some(folder_id),
+            None,
+            None,
+            Some("optimistic-abc".to_string()),
+        )
+        .await
+        .expect("send");
+
+        let msgs = drain_user_messages(&mut rx);
+        assert!(
+            msgs.iter().any(|(id, _)| id == "optimistic-abc"),
+            "UserMessage must carry the client-supplied message_id, got {msgs:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn send_prompt_linked_failed_enqueue_does_not_broadcast_user_message() {
+        // A failed enqueue (dropped cmd receiver) rolls the row back to Cancelled
+        // with NO TurnComplete. The UserMessage must NOT broadcast and
+        // pending_user_message must stay None — otherwise a snapshot would
+        // strand a stale prompt and viewers a never-promoted user turn.
+        use crate::db::test_helpers;
+        let db = test_helpers::fresh_in_memory_db().await;
+        let folder_id = test_helpers::seed_folder(&db, "/tmp/um-fail").await;
+        let mgr = ConnectionManager::new();
+        let conn_id = "conn-um-fail";
+        // insert_fake_connection drops the cmd receiver → send_prompt_inner fails.
+        insert_fake_connection(
+            &mgr,
+            conn_id,
+            AgentType::ClaudeCode,
+            Some(PathBuf::from("/tmp/um-fail")),
+            EventEmitter::Noop,
+        )
+        .await;
+        let mut rx = subscribe_conn_stream(&mgr, conn_id).await;
+
+        let result = mgr
+            .send_prompt_linked(
+                &db,
+                conn_id,
+                vec![PromptInputBlock::Text {
+                    text: "never enqueued".into(),
+                }],
+                Some(folder_id),
+                None,
+                None,
+            )
+            .await;
+        assert!(result.is_err(), "a dropped receiver must fail the enqueue");
+
+        assert!(
+            drain_user_messages(&mut rx).is_empty(),
+            "a failed enqueue must NOT broadcast the user_message"
+        );
+        let pending = mgr
+            .get_state(conn_id)
+            .await
+            .unwrap()
+            .read()
+            .await
+            .pending_user_message
+            .clone();
+        assert!(
+            pending.is_none(),
+            "a failed enqueue must not strand pending_user_message"
+        );
+    }
+
+    #[tokio::test]
+    async fn send_prompt_linked_skips_user_message_for_delegation_child() {
+        // Delegation children surface their kickoff prompt via a separate path;
+        // send_prompt_linked must NOT broadcast a user_message (or capture
+        // pending) for them, so the sub-agent viewer doesn't double-render.
+        use crate::acp::delegation::spawner::DelegationLink;
+        use crate::db::test_helpers;
+        let db = test_helpers::fresh_in_memory_db().await;
+        let folder_id = test_helpers::seed_folder(&db, "/tmp/um-deleg").await;
+        let parent = conversation_service::create(
+            &db.conn,
+            folder_id,
+            AgentType::ClaudeCode,
+            None,
+            None,
+        )
+        .await
+        .expect("parent");
+        let mgr = ConnectionManager::new();
+        let conn_id = "conn-um-deleg";
+        insert_fake_connection(
+            &mgr,
+            conn_id,
+            AgentType::Codex,
+            Some(PathBuf::from("/tmp/um-deleg")),
+            EventEmitter::Noop,
+        )
+        .await;
+        let mut rx = subscribe_conn_stream(&mgr, conn_id).await;
+
+        let _ = mgr
+            .send_prompt_linked(
+                &db,
+                conn_id,
+                vec![PromptInputBlock::Text {
+                    text: "child kickoff".into(),
+                }],
+                Some(folder_id),
+                None,
+                Some(DelegationLink {
+                    parent_conversation_id: parent.id,
+                    parent_tool_use_id: "tu-1".into(),
+                    delegation_call_id: "call-1".into(),
+                }),
+            )
+            .await;
+
+        assert!(
+            drain_user_messages(&mut rx).is_empty(),
+            "delegation child must NOT broadcast a user_message"
+        );
+        let pending = mgr
+            .get_state(conn_id)
+            .await
+            .unwrap()
+            .read()
+            .await
+            .pending_user_message
+            .clone();
+        assert!(
+            pending.is_none(),
+            "delegation child must not capture pending_user_message"
+        );
+    }
+
     #[tokio::test]
     async fn get_state_returns_arc_for_known_connection() {
         let mgr = ConnectionManager::new();
@@ -1664,6 +2030,116 @@ mod tests {
             }
             other => panic!("expected ConversationLinked, got {other:?}"),
         }
+    }
+
+    /// Drain the global broadcaster and report whether a `conversation://changed`
+    /// upsert for `id` carrying `external_id` was emitted.
+    fn drain_has_upsert_with_external_id(
+        rx: &mut broadcast::Receiver<WebEvent>,
+        id: i32,
+        external_id: &str,
+    ) -> bool {
+        while let Ok(evt) = rx.try_recv() {
+            if evt.channel != crate::web::event_bridge::CONVERSATION_CHANGED_EVENT {
+                continue;
+            }
+            let p = &*evt.payload;
+            if p["kind"] == "upsert"
+                && p["summary"]["id"] == id
+                && p["summary"]["external_id"] == external_id
+            {
+                return true;
+            }
+        }
+        false
+    }
+
+    #[tokio::test]
+    async fn send_prompt_linked_session_started_before_link_broadcasts_external_id_branch_b() {
+        // SessionStarted-before-link: external_id is already on the live state
+        // but no conversation_id yet, so the lifecycle subscriber skipped its
+        // broadcast. The synchronous external_id persist inside
+        // send_prompt_linked (backend-create Branch B) must itself emit a
+        // corrective `conversation://changed` upsert so other clients converge.
+        use crate::db::test_helpers;
+        let db = test_helpers::fresh_in_memory_db().await;
+        let folder_id = test_helpers::seed_folder(&db, "/tmp/sess-pre-b").await;
+        let mgr = ConnectionManager::new();
+        let (broadcaster, mut rx) = make_test_broadcaster();
+        let conn_id = "conn-sess-pre-b";
+        insert_fake_connection(
+            &mgr,
+            conn_id,
+            AgentType::ClaudeCode,
+            Some(PathBuf::from("/tmp/sess-pre-b")),
+            EventEmitter::test_web_only(broadcaster.clone()),
+        )
+        .await;
+        {
+            let state = mgr.get_state(conn_id).await.unwrap();
+            state.write().await.external_id = Some("ext-pre".to_string());
+        }
+
+        // cmd_tx receiver is dropped → the prompt send fails after linking, but
+        // the link + external_id persist + broadcast already happened.
+        let _ = mgr
+            .send_prompt_linked(&db, conn_id, vec![], Some(folder_id), None, None)
+            .await;
+
+        let cid = mgr
+            .get_state(conn_id)
+            .await
+            .unwrap()
+            .read()
+            .await
+            .conversation_id
+            .expect("conversation should be linked");
+        let row = conversation_service::get_by_id(&db.conn, cid).await.unwrap();
+        assert_eq!(row.external_id.as_deref(), Some("ext-pre"));
+        assert!(
+            drain_has_upsert_with_external_id(&mut rx, cid, "ext-pre"),
+            "Branch B must broadcast a conversation://changed upsert carrying external_id"
+        );
+    }
+
+    #[tokio::test]
+    async fn send_prompt_linked_session_started_before_link_broadcasts_external_id_branch_a() {
+        // Same precondition, caller-supplied conversation_id (adopt Branch A).
+        use crate::db::test_helpers;
+        let db = test_helpers::fresh_in_memory_db().await;
+        let folder_id = test_helpers::seed_folder(&db, "/tmp/sess-pre-a").await;
+        let pre =
+            conversation_service::create(&db.conn, folder_id, AgentType::ClaudeCode, None, None)
+                .await
+                .unwrap();
+        let mgr = ConnectionManager::new();
+        let (broadcaster, mut rx) = make_test_broadcaster();
+        let conn_id = "conn-sess-pre-a";
+        insert_fake_connection(
+            &mgr,
+            conn_id,
+            AgentType::ClaudeCode,
+            Some(PathBuf::from("/tmp/sess-pre-a")),
+            EventEmitter::test_web_only(broadcaster.clone()),
+        )
+        .await;
+        {
+            let state = mgr.get_state(conn_id).await.unwrap();
+            state.write().await.external_id = Some("ext-pre-a".to_string());
+        }
+
+        let _ = mgr
+            .send_prompt_linked(&db, conn_id, vec![], Some(folder_id), Some(pre.id), None)
+            .await;
+
+        let row = conversation_service::get_by_id(&db.conn, pre.id)
+            .await
+            .unwrap();
+        assert_eq!(row.external_id.as_deref(), Some("ext-pre-a"));
+        assert!(
+            drain_has_upsert_with_external_id(&mut rx, pre.id, "ext-pre-a"),
+            "Branch A must broadcast a conversation://changed upsert carrying external_id"
+        );
     }
 
     #[tokio::test]

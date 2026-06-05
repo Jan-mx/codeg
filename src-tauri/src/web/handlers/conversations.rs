@@ -177,6 +177,7 @@ pub async fn create_conversation(
         params.title,
     )
     .await?;
+    conv_commands::emit_conversation_upsert(&state.emitter, &db.conn, result).await;
     Ok(Json(result))
 }
 
@@ -197,6 +198,8 @@ pub async fn update_conversation_status(
         params.status,
     )
     .await?;
+    conv_commands::emit_conversation_upsert(&state.emitter, &state.db.conn, params.conversation_id)
+        .await;
     Ok(Json(()))
 }
 
@@ -217,6 +220,8 @@ pub async fn update_conversation_title(
         params.title,
     )
     .await?;
+    conv_commands::emit_conversation_upsert(&state.emitter, &state.db.conn, params.conversation_id)
+        .await;
     Ok(Json(()))
 }
 
@@ -231,5 +236,6 @@ pub async fn delete_conversation(
     Json(params): Json<DeleteConversationParams>,
 ) -> Result<Json<()>, AppCommandError> {
     conv_commands::delete_conversation_core(&state.db.conn, params.conversation_id).await?;
+    conv_commands::emit_conversation_deleted(&state.emitter, params.conversation_id);
     Ok(Json(()))
 }

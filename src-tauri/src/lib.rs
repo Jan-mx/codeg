@@ -839,6 +839,7 @@ mod tauri_app {
                 acp_commands::acp_list_connections,
                 acp_commands::acp_get_session_snapshot,
                 acp_commands::acp_get_session_snapshot_by_conversation,
+                acp_commands::acp_find_connection_for_conversation,
                 acp_commands::acp_list_agents,
                 acp_commands::acp_get_agent_status,
                 acp_commands::acp_clear_binary_cache,

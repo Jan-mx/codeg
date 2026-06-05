@@ -261,6 +261,16 @@ export interface DbConversationSummary {
   delegation_call_id?: string | null
 }
 
+/** Payload for the global `conversation://changed` side-channel that keeps
+ *  every client's sidebar list/status in sync across desktop + browsers.
+ *  Mirrors the Rust `ConversationChange` enum (serde `tag = "kind"`). */
+export type ConversationChange =
+  | { kind: "upsert"; summary: DbConversationSummary }
+  | { kind: "deleted"; id: number }
+  | { kind: "status"; id: number; status: string }
+
+export const CONVERSATION_CHANGED_EVENT = "conversation://changed"
+
 export interface ImportResult {
   imported: number
   skipped: number
@@ -632,6 +642,26 @@ export type AcpEvent =
       agent_type: AgentType
       result: DelegationResultSummary
     }
+  /**
+   * The user's submitted prompt, broadcast on the connection stream so OTHER
+   * clients viewing this conversation synthesize the user turn in real time.
+   * The sending client renders its own optimistic turn and ignores this echo.
+   * Emitted only for root sends (delegation children synthesize kickoff text
+   * separately).
+   */
+  | {
+      type: "user_message"
+      message_id: string
+      blocks: UserMessageBlock[]
+    }
+
+/** A block of a broadcast user prompt (mirror of Rust `UserMessageBlock`).
+ *  Narrower than the persisted `ContentBlock`: only what a viewer needs to
+ *  render the user turn. Resource/resource-link prompt blocks are folded into
+ *  `text` markdown links backend-side. */
+export type UserMessageBlock =
+  | { type: "text"; text: string }
+  | { type: "image"; data: string; mime_type: string }
 
 /**
  * Mirror of Rust `DelegationResultSummary`. `kind` discriminates Ok vs Err;
@@ -757,6 +787,12 @@ export interface LiveSessionSnapshot {
   live_message: LiveMessage | null
   active_tool_calls: ToolCallState[]
   pending_permission: PendingPermissionState | null
+  /** In-flight user prompt for the current turn — lets a client attaching
+   *  mid-turn render the user turn. Absent (omitted) when no turn is in flight. */
+  pending_user_message?: {
+    message_id: string
+    blocks: UserMessageBlock[]
+  } | null
   /** Live sub-agent delegations recoverable from the snapshot. May be absent
    *  on older server payloads (then treated as `[]`). */
   active_delegations?: ActiveDelegationState[]
@@ -776,6 +812,16 @@ export interface ConnectionInfo {
   id: string
   agent_type: AgentType
   status: ConnectionStatus
+}
+
+// Live connection bound to a conversation, returned by
+// acp_find_connection_for_conversation. `null` means no live connection (read
+// persisted detail instead of attaching). `event_seq` is the connection's
+// progress at discovery time — informational only; viewers always cold-attach
+// (full snapshot, no cursor), since they've applied no prior events.
+export interface ConversationConnectionInfo {
+  connection_id: string
+  event_seq: number
 }
 
 // ACP agent info returned by acp_list_agents

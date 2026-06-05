@@ -168,6 +168,14 @@ type Action =
       turnToken: string
     }
   | {
+      // Cross-client VIEWER synthesizes the sender's user turn from a
+      // `user_message` event / snapshot. Idempotent + sender-guarded in the
+      // reducer (never fires on a client that has its own in-flight send).
+      type: "APPEND_VIEWER_USER_TURN"
+      conversationId: number
+      turn: MessageTurn
+    }
+  | {
       type: "SET_LIVE_MESSAGE"
       conversationId: number
       liveMessage: LiveMessage | null
@@ -918,6 +926,35 @@ function reducer(
         activeTurnToken: action.turnToken,
       }))
 
+    case "APPEND_VIEWER_USER_TURN": {
+      const current =
+        state.byConversationId.get(action.conversationId) ??
+        createEmptySession(action.conversationId)
+      const id = action.turn.id
+      // EXACT-id dedup (not a heuristic): the sender's OWN optimistic turn
+      // shares this id — the UI threaded its optimistic turn id to the backend,
+      // which echoed it as the `user_message` message_id — so the sender drops
+      // its own echo here. Also covers an already-promoted turn (localTurns) and
+      // a snapshot re-deliver. Keyed on exact id so an UNRELATED optimistic turn
+      // on a co-controlling client never suppresses a DIFFERENT sender's prompt.
+      if (
+        current.optimisticTurns.some((t) => t.id === id) ||
+        current.localTurns.some((t) => t.id === id)
+      ) {
+        return state
+      }
+      // Append as an optimistic turn so it flows through the EXISTING promotion
+      // (COMPLETE_TURN → localTurns) and reset-on-fetch machinery, identical to
+      // the owner's own user turn. Deliberately does NOT set
+      // `syncState: "awaiting_persist"` — the viewer didn't send, so a later
+      // detail fetch should cleanly replace the synthesized turn with persisted
+      // truth (awaiting_persist would preserve it and risk a duplicate).
+      return updateSessionInState(state, action.conversationId, (s) => ({
+        ...s,
+        optimisticTurns: [...s.optimisticTurns, action.turn],
+      }))
+    }
+
     case "SET_LIVE_MESSAGE": {
       const current = state.byConversationId.get(action.conversationId)
 
@@ -1155,6 +1192,10 @@ interface ConversationRuntimeContextValue {
     turn: MessageTurn,
     turnToken: string
   ) => void
+  /** Cross-client VIEWER: synthesize the sender's user turn from a broadcast
+   *  `user_message` / snapshot. No-op on the sender (sender-guarded + idempotent
+   *  in the reducer). */
+  appendViewerUserTurn: (conversationId: number, turn: MessageTurn) => void
   setLiveMessage: (
     conversationId: number,
     liveMessage: LiveMessage | null,
@@ -1640,6 +1681,13 @@ export function ConversationRuntimeProvider({
     []
   )
 
+  const appendViewerUserTurn = useCallback(
+    (conversationId: number, turn: MessageTurn) => {
+      dispatch({ type: "APPEND_VIEWER_USER_TURN", conversationId, turn })
+    },
+    []
+  )
+
   const setLiveMessage = useCallback(
     (
       conversationId: number,
@@ -1732,6 +1780,7 @@ export function ConversationRuntimeProvider({
       syncTurnMetadata,
       completeTurn,
       appendOptimisticTurn,
+      appendViewerUserTurn,
       setLiveMessage,
       setExternalId,
       setSyncState,
@@ -1751,6 +1800,7 @@ export function ConversationRuntimeProvider({
       syncTurnMetadata,
       completeTurn,
       appendOptimisticTurn,
+      appendViewerUserTurn,
       setLiveMessage,
       setExternalId,
       setSyncState,

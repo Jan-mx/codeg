@@ -9,6 +9,7 @@ import {
   type ConnectionState,
   type LiveMessage,
   type PendingPermission,
+  type PendingUserMessage,
   type PendingQuestion,
 } from "@/contexts/acp-connections-context"
 import type {
@@ -40,6 +41,7 @@ export interface UseConnectionReturn {
   availableCommands: AvailableCommandInfo[] | null
   liveMessage: LiveMessage | null
   pendingPermission: PendingPermission | null
+  pendingUserMessage: PendingUserMessage | null
   pendingQuestion: PendingQuestion | null
   claudeApiRetry: ClaudeApiRetryState | null
   error: string | null
@@ -47,12 +49,17 @@ export interface UseConnectionReturn {
   connect: (
     agentType: AgentType,
     workingDir?: string,
-    sessionId?: string
+    sessionId?: string,
+    conversationId?: number
   ) => Promise<void>
   disconnect: () => Promise<void>
   sendPrompt: (
     blocks: PromptInputBlock[],
-    opts?: { folderId?: number | null; conversationId?: number | null }
+    opts?: {
+      folderId?: number | null
+      conversationId?: number | null
+      clientMessageId?: string | null
+    }
   ) => Promise<void>
   setMode: (modeId: string) => Promise<void>
   setConfigOption: (configId: string, valueId: string) => Promise<void>
@@ -96,14 +103,26 @@ export function useConnection(contextKey: string): UseConnectionReturn {
   const availableCommands = connection?.availableCommands ?? null
   const liveMessage = connection?.liveMessage ?? null
   const pendingPermission = connection?.pendingPermission ?? null
+  const pendingUserMessage = connection?.pendingUserMessage ?? null
   const pendingQuestion = connection?.pendingQuestion ?? null
   const claudeApiRetry = connection?.claudeApiRetry ?? null
   const error = connection?.error ?? null
   const loadError = connection?.loadError ?? null
 
   const connect = useCallback(
-    (agentType: AgentType, workingDir?: string, sessionId?: string) =>
-      actions.connect(contextKey, agentType, workingDir, sessionId),
+    (
+      agentType: AgentType,
+      workingDir?: string,
+      sessionId?: string,
+      conversationId?: number
+    ) =>
+      actions.connect(
+        contextKey,
+        agentType,
+        workingDir,
+        sessionId,
+        conversationId
+      ),
     [actions, contextKey]
   )
 
@@ -115,7 +134,11 @@ export function useConnection(contextKey: string): UseConnectionReturn {
   const sendPrompt = useCallback(
     (
       blocks: PromptInputBlock[],
-      opts?: { folderId?: number | null; conversationId?: number | null }
+      opts?: {
+        folderId?: number | null
+        conversationId?: number | null
+        clientMessageId?: string | null
+      }
     ) => actions.sendPrompt(contextKey, blocks, opts),
     [actions, contextKey]
   )
@@ -156,6 +179,7 @@ export function useConnection(contextKey: string): UseConnectionReturn {
       availableCommands,
       liveMessage,
       pendingPermission,
+      pendingUserMessage,
       pendingQuestion,
       claudeApiRetry,
       error,
@@ -181,6 +205,7 @@ export function useConnection(contextKey: string): UseConnectionReturn {
       availableCommands,
       liveMessage,
       pendingPermission,
+      pendingUserMessage,
       pendingQuestion,
       claudeApiRetry,
       error,

@@ -20,6 +20,7 @@ import type {
   AgentStats,
   SidebarData,
   ConnectionInfo,
+  ConversationConnectionInfo,
   LiveSessionSnapshot,
   AcpAgentInfo,
   AcpAgentStatus,
@@ -140,13 +141,15 @@ export async function acpPrompt(
   connectionId: string,
   blocks: PromptInputBlock[],
   folderId: number | null = null,
-  conversationId: number | null = null
+  conversationId: number | null = null,
+  clientMessageId: string | null = null
 ): Promise<void> {
   return getTransport().call("acp_prompt", {
     connectionId,
     blocks,
     folderId,
     conversationId,
+    clientMessageId,
   })
 }
 
@@ -219,6 +222,14 @@ export async function acpGetSessionSnapshotByConversation(
   conversationId: number
 ): Promise<LiveSessionSnapshot | null> {
   return getTransport().call("acp_get_session_snapshot_by_conversation", {
+    conversationId,
+  })
+}
+
+export async function acpFindConnectionForConversation(
+  conversationId: number
+): Promise<ConversationConnectionInfo | null> {
+  return getTransport().call("acp_find_connection_for_conversation", {
     conversationId,
   })
 }

@@ -52,6 +52,7 @@ import {
   type EventEnvelope,
   type MessageTurn,
   type PromptDraft,
+  type UserMessageBlock,
 } from "@/lib/types"
 import {
   getSavedModeId,
@@ -125,6 +126,27 @@ function buildOptimisticUserTurnFromDraft(
   }
 }
 
+/** Build a user `MessageTurn` from a broadcast `user_message` (event or
+ *  snapshot `pending_user_message`). Used by cross-client VIEWERS to render the
+ *  sender's prompt. The turn `id` is the broadcast `message_id` so the runtime
+ *  reducer can dedup it idempotently. */
+function buildUserTurnFromMessageBlocks(
+  messageId: string,
+  blocks: UserMessageBlock[]
+): MessageTurn {
+  const contentBlocks: ContentBlock[] = blocks.map((b) =>
+    b.type === "image"
+      ? { type: "image", data: b.data, mime_type: b.mime_type, uri: null }
+      : { type: "text", text: b.text }
+  )
+  return {
+    id: messageId,
+    role: "user",
+    blocks: contentBlocks,
+    timestamp: new Date().toISOString(),
+  }
+}
+
 function buildVirtualConversationId(seed: string): number {
   let hash = 0
   for (let i = 0; i < seed.length; i += 1) {
@@ -161,6 +183,7 @@ const ConversationTabView = memo(function ConversationTabView({
   const { setSessionStats } = useSessionStats()
   const {
     appendOptimisticTurn,
+    appendViewerUserTurn,
     completeTurn,
     getSession,
     refetchDetail,
@@ -336,6 +359,9 @@ const ConversationTabView = memo(function ConversationTabView({
       dbConversationId != null && selectedAgent !== "cline"
         ? externalId
         : undefined,
+    // Drives cross-client viewer discovery: when another client is already
+    // live on this conversation, attach to its connection instead of spawning.
+    conversationId: dbConversationId ?? undefined,
   })
   const { status: connStatus, sessionId: connSessionId } = conn
   const messageQueue = useMessageQueue()
@@ -482,6 +508,41 @@ const ConversationTabView = memo(function ConversationTabView({
     }
   }, [conn.liveMessage, connStatus, effectiveConversationId, setLiveMessage])
 
+  // Cross-client VIEWER (Bug 2): mirror the connection's in-flight user prompt
+  // (from a snapshot's `pending_user_message`, captured when we attach
+  // mid-turn) into the runtime as a synthesized user turn. The reducer
+  // sender-guards + dedups by id, so this is a no-op on the sender and
+  // idempotent against the live `user_message` event below. This branch covers
+  // the prompt that was sent BEFORE we attached; the live handler covers
+  // prompts sent AFTER.
+  useEffect(() => {
+    const pending = conn.pendingUserMessage
+    if (!pending) return
+    appendViewerUserTurn(
+      effectiveConversationId,
+      buildUserTurnFromMessageBlocks(pending.messageId, pending.blocks)
+    )
+  }, [conn.pendingUserMessage, effectiveConversationId, appendViewerUserTurn])
+
+  // Cross-client VIEWER (Bug 2): a `user_message` event for THIS connection
+  // that arrives while we're attached. The owner added its user turn
+  // optimistically; a viewer only receives the assistant stream, so without
+  // this the reply would render with no user message above it. Sender-guarded +
+  // idempotent in the reducer (the sender's own echo is a no-op).
+  useAcpEvent(
+    useCallback(
+      (envelope: EventEnvelope) => {
+        if (envelope.type !== "user_message") return
+        if (envelope.connection_id !== conn.connectionId) return
+        appendViewerUserTurn(
+          effectiveConversationId,
+          buildUserTurnFromMessageBlocks(envelope.message_id, envelope.blocks)
+        )
+      },
+      [conn.connectionId, effectiveConversationId, appendViewerUserTurn]
+    )
+  )
+
   useEffect(() => {
     if (effectiveConversationId <= 0) return
     setExternalId(effectiveConversationId, detail?.summary.external_id ?? null)
@@ -574,6 +635,10 @@ const ConversationTabView = memo(function ConversationTabView({
         lifecycleSend(draft, selectedModeIdArg, {
           folderId,
           conversationId: persistedId,
+          // The backend echoes this as the broadcast UserMessage's message_id,
+          // so viewers' synthesized user turn dedups against our own optimistic
+          // turn by exact id (and never suppresses a different sender's prompt).
+          clientMessageId: optimisticTurn.id,
         })
         return
       }
@@ -627,6 +692,7 @@ const ConversationTabView = memo(function ConversationTabView({
           lifecycleSend(draft, selectedModeIdArg, {
             folderId,
             conversationId: newConversationId,
+            clientMessageId: optimisticTurn.id,
           })
         } catch (e) {
           console.error("[ConversationTabView] create conversation:", e)
@@ -786,7 +852,8 @@ const ConversationTabView = memo(function ConversationTabView({
       setSyncState(effectiveConversationId, "awaiting_persist")
       lifecycleSend(
         { blocks: [{ type: "text", text: answer }], displayText: answer },
-        null
+        null,
+        { clientMessageId: optimisticTurn.id }
       )
     },
     [

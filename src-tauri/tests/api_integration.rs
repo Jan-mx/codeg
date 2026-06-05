@@ -150,6 +150,25 @@ async fn open_folder_then_list_open_folders_shows_it() {
     );
 }
 
+#[tokio::test]
+async fn acp_find_connection_for_conversation_returns_null_when_none_live() {
+    // No live ACP connection is bound to any conversation on a fresh server, so
+    // discovery returns JSON `null` (Option::None) with 200 — the frontend
+    // reads this as "no live owner, open the persisted detail instead".
+    let (server, _data, _static) = build_test_server().await;
+    let resp = server
+        .post("/api/acp_find_connection_for_conversation")
+        .add_header("authorization", format!("Bearer {TEST_TOKEN}"))
+        .json(&json!({"conversationId": 999}))
+        .await;
+    assert_eq!(resp.status_code(), 200, "body: {}", resp.text());
+    let body: Value = resp.json();
+    assert!(
+        body.is_null(),
+        "expected null for an unbound conversation, got {body}"
+    );
+}
+
 // ────────────────────────────────────────────────────────────────────────────
 // Field naming sanity (snake_case ↔ camelCase boundary)
 // ────────────────────────────────────────────────────────────────────────────
