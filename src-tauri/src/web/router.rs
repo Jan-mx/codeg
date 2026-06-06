@@ -292,6 +292,10 @@ pub fn build_router(
         )
         .route("/read_file_base64", post(handlers::files::read_file_base64))
         .route(
+            "/read_workspace_file_base64",
+            post(handlers::files::read_workspace_file_base64),
+        )
+        .route(
             "/read_file_for_edit",
             post(handlers::files::read_file_for_edit),
         )

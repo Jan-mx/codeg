@@ -1143,7 +1143,10 @@
       "loadingEditor": "جارٍ تحميل المحرر...",
       "imageZoomIn": "تكبير",
       "imageZoomOut": "تصغير",
-      "imageZoomReset": "إعادة تعيين التكبير"
+      "imageZoomReset": "إعادة تعيين التكبير",
+      "htmlPreviewTitle": "معاينة HTML",
+      "htmlPreviewTrust": "تفعيل البرامج النصية",
+      "htmlPreviewTrustHint": "تشغيل البرامج النصية لهذا الملف والسماح بالوصول إلى الشبكة. فعّلها فقط للملفات الموثوقة."
     },
     "branchDropdown": {
       "toasts": {

@@ -1143,7 +1143,10 @@
       "loadingEditor": "에디터 로딩 중...",
       "imageZoomIn": "확대",
       "imageZoomOut": "축소",
-      "imageZoomReset": "확대/축소 초기화"
+      "imageZoomReset": "확대/축소 초기화",
+      "htmlPreviewTitle": "HTML 미리보기",
+      "htmlPreviewTrust": "스크립트 사용",
+      "htmlPreviewTrustHint": "이 파일의 스크립트를 실행하고 네트워크 접근을 허용합니다. 신뢰할 수 있는 파일에서만 사용하세요."
     },
     "branchDropdown": {
       "toasts": {

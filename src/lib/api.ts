@@ -2142,6 +2142,21 @@ export async function readFileBase64(
   })
 }
 
+// Workspace-confined base64 read: `path` is relative to `rootPath` and is
+// canonicalized server-side (resolving symlinks), so it can never read outside
+// the workspace. Used by the HTML preview to inline local sub-resources safely.
+export async function readWorkspaceFileBase64(
+  rootPath: string,
+  path: string,
+  maxBytes?: number
+): Promise<string> {
+  return getTransport().call("read_workspace_file_base64", {
+    rootPath,
+    path,
+    maxBytes: maxBytes ?? null,
+  })
+}
+
 export async function readFilePreview(
   rootPath: string,
   path: string

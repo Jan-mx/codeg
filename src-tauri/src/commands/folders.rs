@@ -3094,6 +3094,109 @@ pub async fn read_file_base64(
     .await
 }
 
+/// Open a file for reading, refusing a final-component symlink (unix) so a
+/// path validated by canonicalization cannot be redirected through a symlink
+/// swapped in afterward.
+#[cfg(unix)]
+fn open_no_follow(path: &Path) -> std::io::Result<std::fs::File> {
+    use std::os::unix::fs::OpenOptionsExt;
+    std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(path)
+}
+
+#[cfg(windows)]
+fn open_no_follow(path: &Path) -> std::io::Result<std::fs::File> {
+    use std::os::windows::fs::OpenOptionsExt;
+    // FILE_FLAG_OPEN_REPARSE_POINT opens the reparse point itself instead of
+    // following it, so a symlink/junction swapped in after validation is opened
+    // (and then rejected by the is_file() check) rather than followed outside
+    // the workspace root.
+    const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+    std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
+        .open(path)
+}
+
+#[cfg(not(any(unix, windows)))]
+fn open_no_follow(path: &Path) -> std::io::Result<std::fs::File> {
+    std::fs::File::open(path)
+}
+
+/// Like `read_file_base64`, but confined to a workspace root: the path is
+/// relative to `root_path` and is canonicalized (resolving symlinks) so it can
+/// never read outside the workspace. Used by the HTML preview to inline local
+/// sub-resources without exposing the unconfined `read_file_base64` to crafted
+/// markup (e.g. a symlink pointing at `/etc/passwd`).
+#[cfg_attr(feature = "tauri-runtime", tauri::command)]
+pub async fn read_workspace_file_base64(
+    root_path: String,
+    path: String,
+    max_bytes: Option<usize>,
+) -> Result<String, AppCommandError> {
+    let root = PathBuf::from(&root_path);
+    if !root.exists() || !root.is_dir() {
+        return Err(AppCommandError::not_found("Folder does not exist"));
+    }
+
+    let target = resolve_tree_path(&root, &path)?;
+    if !target.exists() {
+        return Err(AppCommandError::not_found("File does not exist"));
+    }
+    if !target.is_file() {
+        return Err(AppCommandError::invalid_input("Path is not a file"));
+    }
+
+    let limit = max_bytes
+        .unwrap_or(FILE_BASE64_DEFAULT_MAX_BYTES)
+        .clamp(4_096, FILE_BASE64_MAX_BYTES);
+
+    run_file_io(move || {
+        use std::io::Read;
+        // Canonicalize and confine, then open a single handle (O_NOFOLLOW on
+        // unix) and do metadata + read on the fd. This closes the check-then-
+        // read race: the original `target` symlink can't be re-resolved (we use
+        // the canonical path), a final-component symlink swapped in after the
+        // check makes the open fail, and metadata/read never re-look-up the path.
+        let canonical_root =
+            std::fs::canonicalize(&root).map_err(AppCommandError::io)?;
+        let canonical_target =
+            std::fs::canonicalize(&target).map_err(AppCommandError::io)?;
+        if !canonical_target.starts_with(&canonical_root) {
+            return Err(AppCommandError::invalid_input(
+                "Path is outside workspace root",
+            ));
+        }
+        let mut file =
+            open_no_follow(&canonical_target).map_err(AppCommandError::io)?;
+        let metadata = file.metadata().map_err(AppCommandError::io)?;
+        if !metadata.is_file() {
+            return Err(AppCommandError::invalid_input("Path is not a file"));
+        }
+        if metadata.len() > limit as u64 {
+            return Err(
+                AppCommandError::invalid_input("File is too large to attach")
+                    .with_detail(format!("max_bytes={limit}")),
+            );
+        }
+        // take(limit + 1) bounds the read even if the file grows after fstat.
+        let mut bytes = Vec::new();
+        Read::take(&mut file, limit as u64 + 1)
+            .read_to_end(&mut bytes)
+            .map_err(AppCommandError::io)?;
+        if bytes.len() > limit {
+            return Err(
+                AppCommandError::invalid_input("File is too large to attach")
+                    .with_detail(format!("max_bytes={limit}")),
+            );
+        }
+        Ok(base64::engine::general_purpose::STANDARD.encode(bytes))
+    })
+    .await
+}
+
 #[cfg_attr(feature = "tauri-runtime", tauri::command)]
 pub async fn read_file_preview(
     root_path: String,
@@ -4047,5 +4150,56 @@ mod tests {
             .await
             .expect("clear agent");
         assert_eq!(cleared.default_agent_type, None);
+    }
+}
+
+// Symlink confinement that `read_workspace_file_base64` relies on. Unix-only
+// because it uses real filesystem symlinks.
+#[cfg(all(test, unix))]
+mod workspace_confinement_tests {
+    use super::*;
+    use std::os::unix::fs::symlink;
+
+    #[tokio::test]
+    async fn reads_in_root_file() {
+        let root = tempfile::tempdir().expect("root");
+        std::fs::write(root.path().join("a.txt"), b"hello").expect("write");
+        let b64 = read_workspace_file_base64(
+            root.path().to_string_lossy().into_owned(),
+            "a.txt".to_string(),
+            None,
+        )
+        .await
+        .expect("should read in-root file");
+        assert_eq!(b64, "aGVsbG8="); // base64("hello")
+    }
+
+    #[tokio::test]
+    async fn rejects_symlink_escaping_root() {
+        let root = tempfile::tempdir().expect("root");
+        let outside = tempfile::tempdir().expect("outside");
+        std::fs::write(outside.path().join("secret"), b"top").expect("write");
+        symlink(outside.path().join("secret"), root.path().join("link"))
+            .expect("symlink");
+        // The canonical target resolves outside the root, so the read is denied
+        // even though `root/link` is lexically inside the workspace.
+        let res = read_workspace_file_base64(
+            root.path().to_string_lossy().into_owned(),
+            "link".to_string(),
+            None,
+        )
+        .await;
+        assert!(res.is_err(), "symlink escaping the workspace must be rejected");
+    }
+
+    #[test]
+    fn ensure_path_in_workspace_rejects_symlink() {
+        let root = tempfile::tempdir().expect("root");
+        let outside = tempfile::tempdir().expect("outside");
+        let secret = outside.path().join("secret.txt");
+        std::fs::write(&secret, b"x").expect("write");
+        let link = root.path().join("asset.txt");
+        symlink(&secret, &link).expect("symlink");
+        assert!(ensure_path_in_workspace(root.path(), &link).is_err());
     }
 }

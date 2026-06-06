@@ -1143,7 +1143,10 @@
       "loadingEditor": "エディターを読み込み中...",
       "imageZoomIn": "拡大",
       "imageZoomOut": "縮小",
-      "imageZoomReset": "ズームをリセット"
+      "imageZoomReset": "ズームをリセット",
+      "htmlPreviewTitle": "HTML プレビュー",
+      "htmlPreviewTrust": "スクリプトを有効化",
+      "htmlPreviewTrustHint": "このファイルのスクリプトを実行し、ネットワークアクセスを許可します。信頼できるファイルでのみ有効にしてください。"
     },
     "branchDropdown": {
       "toasts": {

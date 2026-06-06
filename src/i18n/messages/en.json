@@ -1143,7 +1143,10 @@
       "loadingEditor": "Loading editor...",
       "imageZoomIn": "Zoom in",
       "imageZoomOut": "Zoom out",
-      "imageZoomReset": "Reset zoom"
+      "imageZoomReset": "Reset zoom",
+      "htmlPreviewTitle": "HTML preview",
+      "htmlPreviewTrust": "Enable scripts",
+      "htmlPreviewTrustHint": "Run this file's scripts and allow network access. Enable only for files you trust."
     },
     "branchDropdown": {
       "toasts": {

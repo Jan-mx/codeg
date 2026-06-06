@@ -740,6 +740,7 @@ mod tauri_app {
                 folders::list_directory_with_files,
                 folders::get_file_tree,
                 folders::read_file_base64,
+                folders::read_workspace_file_base64,
                 folders::read_file_preview,
                 folders::read_file_for_edit,
                 folders::save_file_content,

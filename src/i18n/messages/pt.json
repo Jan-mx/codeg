@@ -1143,7 +1143,10 @@
       "loadingEditor": "Carregando editor...",
       "imageZoomIn": "Ampliar",
       "imageZoomOut": "Reduzir",
-      "imageZoomReset": "Redefinir zoom"
+      "imageZoomReset": "Redefinir zoom",
+      "htmlPreviewTitle": "Visualização HTML",
+      "htmlPreviewTrust": "Ativar scripts",
+      "htmlPreviewTrustHint": "Executa os scripts deste arquivo e permite acesso à rede. Ative apenas para arquivos confiáveis."
     },
     "branchDropdown": {
       "toasts": {
