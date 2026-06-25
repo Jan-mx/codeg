@@ -337,9 +337,9 @@ pub async fn officecli_install() -> Result<OfficecliInfo, OfficeToolsError> {
 
     #[cfg(windows)]
     {
-        return Err(OfficeToolsError::CommandFailed(
+        Err(OfficeToolsError::CommandFailed(
             "automatic install is not supported on Windows — please install manually from https://github.com/iOfficeAI/OfficeCLI".to_string(),
-        ));
+        ))
     }
 
     #[cfg(unix)]
