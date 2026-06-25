@@ -109,7 +109,7 @@ describe("ConversationDetailPanel new conversation layout", () => {
     expect(chatInputSource).not.toContain("containerClassName")
     expect(source).not.toContain("containerClassName")
     expect(conversationShellSource).not.toContain("containerClassName")
-    expect(source).toContain("mx-auto flex w-full max-w-2xl")
+    expect(source).toContain("mx-auto flex w-full max-w-3xl")
   })
 })
 
