@@ -267,16 +267,64 @@ fn agent_link_path(agent: AgentType, skill_id: &str) -> Result<PathBuf, OfficeTo
 
 // ─── Binary detection ──────────────────────────────────────────────────
 
+/// Locations the official OfficeCLI installers drop the binary, in priority
+/// order. `install.sh` uses `~/.local/bin/officecli` on Unix; `install.ps1`
+/// uses `%LOCALAPPDATA%\OfficeCLI\officecli.exe` on Windows. Used as a fallback
+/// when `officecli` isn't (yet) on `PATH`.
+fn officecli_known_install_paths() -> Vec<PathBuf> {
+    let mut paths = Vec::new();
+    #[cfg(windows)]
+    {
+        if let Some(local_app_data) = std::env::var_os("LOCALAPPDATA") {
+            paths.push(
+                PathBuf::from(local_app_data)
+                    .join("OfficeCLI")
+                    .join("officecli.exe"),
+            );
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        if let Some(home) = dirs::home_dir() {
+            paths.push(home.join(".local").join("bin").join("officecli"));
+        }
+    }
+    paths
+}
+
+/// The path `officecli_uninstall` removes — the official installer's primary
+/// install location for this platform.
+fn officecli_primary_install_path() -> Option<PathBuf> {
+    officecli_known_install_paths().into_iter().next()
+}
+
 pub(crate) fn resolve_officecli() -> Option<PathBuf> {
     if let Some(p) = resolve_command_on_path("officecli") {
         return Some(p);
     }
-    let fallback = dirs::home_dir()?.join(".local/bin/officecli");
-    if fallback.exists() {
-        Some(fallback)
-    } else {
-        None
+    // Fall back to the official installers' known locations — covers the window
+    // on Windows where `install.ps1`'s persistent User-PATH change hasn't yet
+    // reached this already-running process.
+    officecli_known_install_paths()
+        .into_iter()
+        .find(|p| p.is_file())
+}
+
+/// Directory to prepend to a spawned agent's `PATH` so agent-invoked
+/// `officecli …` (from an enabled office skill) resolves immediately after a
+/// fresh install — before `install.ps1`'s persistent User-PATH change reaches
+/// already-running processes (codeg and the agents it spawns). Returns `None`
+/// once `officecli` is on `PATH` (the injection then self-deactivates) or when
+/// it isn't installed. Also closes the latent gap where a GUI-launched codeg on
+/// Unix doesn't inherit `~/.local/bin` on `PATH`.
+pub(crate) fn officecli_agent_path_dir() -> Option<PathBuf> {
+    if resolve_command_on_path("officecli").is_some() {
+        return None;
     }
+    officecli_known_install_paths()
+        .into_iter()
+        .find(|p| p.is_file())
+        .and_then(|p| p.parent().map(Path::to_path_buf))
 }
 
 async fn detect_version(binary: &Path) -> Option<String> {
@@ -319,40 +367,131 @@ pub async fn officecli_detect() -> OfficecliInfo {
 #[cfg_attr(feature = "tauri-runtime", tauri::command)]
 pub async fn officecli_install() -> Result<OfficecliInfo, OfficeToolsError> {
     let _guard = mutation_lock().lock().await;
-    #[cfg(unix)]
-    {
-        let output = tokio_command("bash")
-            .arg("-c")
-            .arg("curl -fsSL https://raw.githubusercontent.com/iOfficeAI/OfficeCLI/main/install.sh | bash")
-            .output()
-            .await
-            .map_err(|e| OfficeToolsError::CommandFailed(format!("failed to run install script: {e}")))?;
 
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(OfficeToolsError::CommandFailed(format!(
-                "install script failed: {stderr}"
-            )));
-        }
-    }
-
-    #[cfg(windows)]
-    {
-        Err(OfficeToolsError::CommandFailed(
-            "automatic install is not supported on Windows — please install manually from https://github.com/iOfficeAI/OfficeCLI".to_string(),
-        ))
-    }
-
-    #[cfg(unix)]
-    {
-        let info = officecli_detect().await;
-        if info.installed {
-            Ok(info)
-        } else {
-            Err(OfficeToolsError::CommandFailed(
-                "installation completed but binary not found on PATH".to_string(),
+    // Run the vendor's official installer script (mirror-first, GitHub
+    // fallback). It owns the download, checksum, install location, and — on
+    // Windows — the persistent User-PATH registration. See `officecli_install_command`.
+    let cmd = officecli_install_command(current_install_os());
+    let output = tokio_command(&cmd.program)
+        .args(&cmd.args)
+        .output()
+        .await
+        .map_err(|e| {
+            OfficeToolsError::CommandFailed(format!(
+                "failed to run the OfficeCLI installer: {e} — install manually from {OFFICECLI_MANUAL_URL}"
             ))
-        }
+        })?;
+
+    if !output.status.success() {
+        // The official scripts report failures on stdout (PowerShell `Write-Host`,
+        // bash `echo`) as much as stderr, so prefer stderr but fall back to stdout
+        // — otherwise the toast can read just "OfficeCLI install failed:". Bound
+        // the tail so a chatty script can't flood the UI.
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let detail = if stderr.trim().is_empty() {
+            stdout.trim()
+        } else {
+            stderr.trim()
+        };
+        return Err(OfficeToolsError::CommandFailed(format!(
+            "OfficeCLI install failed: {} — install manually from {OFFICECLI_MANUAL_URL}",
+            bounded_tail(detail, 800)
+        )));
+    }
+
+    let info = officecli_detect().await;
+    if info.installed {
+        Ok(info)
+    } else {
+        Err(OfficeToolsError::CommandFailed(format!(
+            "installation completed but the officecli binary was not found — install manually from {OFFICECLI_MANUAL_URL}"
+        )))
+    }
+}
+
+// ─── Official installer (shell out, mirror-first) ──────────────────────
+//
+// codeg installs OfficeCLI by running the vendor's official installer script —
+// `install.sh` on Unix, `install.ps1` on Windows — mirror-first (the
+// CN-reachable `d.officecli.ai`) with a GitHub-raw fallback. This mirrors how
+// iOfficeAI's own AionUi backend installs OfficeCLI, keeps both platforms
+// symmetric, and never reimplements the download/checksum/PATH logic those
+// scripts already own (on Windows `install.ps1` also persists the install dir
+// onto the User PATH).
+
+/// Last `max` chars of `s` (char-boundary safe), prefixed with `…` when
+/// truncated. Bounds installer diagnostics surfaced to the UI toast.
+fn bounded_tail(s: &str, max: usize) -> String {
+    if s.len() <= max {
+        return s.to_string();
+    }
+    let mut start = s.len() - max;
+    while start < s.len() && !s.is_char_boundary(start) {
+        start += 1;
+    }
+    format!("…{}", &s[start..])
+}
+
+/// Where users can install OfficeCLI by hand when the network path fails.
+const OFFICECLI_MANUAL_URL: &str = "https://github.com/iOfficeAI/OfficeCLI";
+const OFFICECLI_INSTALL_SH_MIRROR_URL: &str = "https://d.officecli.ai/install.sh";
+const OFFICECLI_INSTALL_SH_GITHUB_URL: &str =
+    "https://raw.githubusercontent.com/iOfficeAI/OfficeCLI/main/install.sh";
+const OFFICECLI_INSTALL_PS1_MIRROR_URL: &str = "https://d.officecli.ai/install.ps1";
+const OFFICECLI_INSTALL_PS1_GITHUB_URL: &str =
+    "https://raw.githubusercontent.com/iOfficeAI/OfficeCLI/main/install.ps1";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum InstallOs {
+    Unix,
+    Windows,
+}
+
+/// `cfg!(windows)` (not `#[cfg]`) so both variants stay referenced in source —
+/// otherwise the unused variant trips dead-code on the platform that omits it.
+fn current_install_os() -> InstallOs {
+    if cfg!(windows) {
+        InstallOs::Windows
+    } else {
+        InstallOs::Unix
+    }
+}
+
+struct OfficecliInstallCommand {
+    program: String,
+    args: Vec<String>,
+}
+
+/// Build the installer invocation for `os`. Both branches try the mirror first,
+/// then fall back to GitHub raw. Kept platform-parameterized (not `cfg`-gated)
+/// so unit tests verify both shapes on any host.
+fn officecli_install_command(os: InstallOs) -> OfficecliInstallCommand {
+    match os {
+        InstallOs::Windows => OfficecliInstallCommand {
+            program: "powershell.exe".to_string(),
+            args: vec![
+                "-NoProfile".to_string(),
+                "-ExecutionPolicy".to_string(),
+                "Bypass".to_string(),
+                "-Command".to_string(),
+                format!(
+                    "$ErrorActionPreference='Stop'; try {{ $s = irm {OFFICECLI_INSTALL_PS1_MIRROR_URL} }} catch {{ $s = irm {OFFICECLI_INSTALL_PS1_GITHUB_URL} }}; iex $s"
+                ),
+            ],
+        },
+        InstallOs::Unix => OfficecliInstallCommand {
+            program: "bash".to_string(),
+            args: vec![
+                "-lc".to_string(),
+                // Download to a temp file rather than `curl | bash`: a
+                // connection dropped mid-stream would otherwise concatenate the
+                // fallback output after a partial script.
+                format!(
+                    "f=$(mktemp) || exit 1; (curl -fsSL {OFFICECLI_INSTALL_SH_MIRROR_URL} -o \"$f\" || curl -fsSL {OFFICECLI_INSTALL_SH_GITHUB_URL} -o \"$f\") && bash \"$f\"; s=$?; rm -f \"$f\"; exit $s"
+                ),
+            ],
+        },
     }
 }
 
@@ -360,12 +499,11 @@ pub async fn officecli_install() -> Result<OfficecliInfo, OfficeToolsError> {
 pub async fn officecli_uninstall() -> Result<OfficecliInfo, OfficeToolsError> {
     let _guard = mutation_lock().lock().await;
 
-    // Operate on the managed install path directly, not the PATH-resolved
-    // binary.  This avoids removing a Homebrew/system binary that happens
-    // to shadow our install, and ensures we always delete the correct file.
-    let managed_path = dirs::home_dir()
-        .map(|h| h.join(".local").join("bin").join("officecli"))
-        .ok_or_else(|| OfficeToolsError::Io("could not determine home directory".to_string()))?;
+    // Operate on the official installer's primary install location directly,
+    // not the PATH-resolved binary. This avoids removing a Homebrew/system
+    // binary that happens to shadow it, and ensures we delete the right file.
+    let managed_path = officecli_primary_install_path()
+        .ok_or_else(|| OfficeToolsError::Io("could not determine install directory".to_string()))?;
 
     // Remove the binary if it exists.  If it's already gone (e.g. retrying
     // after a partial failure), skip straight to cleanup.
@@ -938,5 +1076,76 @@ mod tests {
             .expect("snapshot returns Ok");
         let expected = skill_defs().len() * supported_agents().len();
         assert_eq!(rows.len(), expected);
+    }
+
+    #[test]
+    fn primary_install_path_is_platform_specific() {
+        let p = officecli_primary_install_path().expect("install path resolvable");
+        let name = p
+            .file_name()
+            .expect("has file name")
+            .to_string_lossy()
+            .to_string();
+        #[cfg(windows)]
+        {
+            assert_eq!(name, "officecli.exe");
+            assert!(
+                p.components().any(|c| c.as_os_str() == "OfficeCLI"),
+                "{p:?}"
+            );
+        }
+        #[cfg(not(windows))]
+        {
+            assert_eq!(name, "officecli");
+            assert!(p.ends_with(".local/bin/officecli"), "{p:?}");
+        }
+    }
+
+    #[test]
+    fn install_command_uses_official_scripts() {
+        let unix = officecli_install_command(InstallOs::Unix);
+        assert_eq!(unix.program, "bash");
+        let unix_script = unix.args.join(" ");
+        assert!(unix_script.contains("install.sh"), "{unix_script}");
+
+        let windows = officecli_install_command(InstallOs::Windows);
+        assert_eq!(windows.program, "powershell.exe");
+        let win_script = windows.args.join(" ");
+        assert!(win_script.contains("install.ps1"), "{win_script}");
+        // PowerShell fetch-and-run idiom: Invoke-RestMethod | Invoke-Expression.
+        assert!(
+            win_script.contains("irm") && win_script.contains("iex"),
+            "{win_script}"
+        );
+    }
+
+    #[test]
+    fn install_command_tries_mirror_before_github() {
+        // The CN-reachable mirror must be attempted before raw.githubusercontent
+        // (often unreachable from mainland-China deployments) on both platforms.
+        for os in [InstallOs::Unix, InstallOs::Windows] {
+            let script = officecli_install_command(os).args.join(" ");
+            let mirror = script.find("d.officecli.ai").expect("mirror URL present");
+            let github = script
+                .find("raw.githubusercontent.com")
+                .expect("github URL present");
+            assert!(mirror < github, "mirror must precede github for {os:?}: {script}");
+        }
+    }
+
+    #[test]
+    fn bounded_tail_is_char_safe_and_bounded() {
+        assert_eq!(bounded_tail("short", 800), "short");
+
+        let long = "x".repeat(1000);
+        let tail = bounded_tail(&long, 800);
+        assert!(tail.starts_with('…'));
+        assert_eq!(tail.chars().filter(|c| *c == 'x').count(), 800);
+
+        // Multibyte input must not panic and must stay on a char boundary.
+        let multibyte = "あ".repeat(500); // 1500 bytes
+        let tail = bounded_tail(&multibyte, 800);
+        assert!(tail.starts_with('…'));
+        assert!(tail.chars().skip(1).all(|c| c == 'あ'));
     }
 }
