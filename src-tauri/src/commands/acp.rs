@@ -573,6 +573,19 @@ async fn detect_local_version(agent_type: AgentType) -> Option<String> {
 /// may not have synced niche packages like `@agentclientprotocol/*`.
 const NPM_OFFICIAL_REGISTRY: &str = "https://registry.npmjs.org";
 
+/// Force npm to install platform-specific `optionalDependencies`. Several agents
+/// ship their native CLI as a per-platform optional package — e.g.
+/// `@agentclientprotocol/claude-agent-acp` pulls in `@anthropic-ai/claude-agent-sdk`,
+/// whose runtime binary lives in optional deps like
+/// `@anthropic-ai/claude-agent-sdk-win32-x64`. npm includes optional deps by
+/// default, but a machine with `omit=optional` in its `.npmrc` (or `npm_config_omit`
+/// in the environment) silently skips them, so the install "succeeds" yet the agent
+/// fails at launch with "native binary not found for <platform>". `--include` wins
+/// over `--omit` regardless of order and a CLI flag outranks any `.npmrc`, so passing
+/// it unconditionally guarantees the native binary lands no matter how npm is
+/// configured. Harmless for agents without optional deps.
+const NPM_INCLUDE_OPTIONAL: &str = "--include=optional";
+
 /// Run an npm command with piped stdout/stderr, streaming each line as a log event.
 /// Returns (success: bool, collected_stderr: String) so callers can inspect errors.
 async fn run_npm_streaming(
@@ -654,11 +667,15 @@ async fn install_npm_global_package_streaming(
         emitter,
         task_id,
         AgentInstallEventKind::Log,
-        format!("$ npm install -g {package}"),
+        format!("$ npm install -g {NPM_INCLUDE_OPTIONAL} {package}"),
     );
 
-    let (success, stderr) =
-        run_npm_streaming(&["install", "-g", &registry_arg, package], task_id, emitter).await?;
+    let (success, stderr) = run_npm_streaming(
+        &["install", "-g", NPM_INCLUDE_OPTIONAL, &registry_arg, package],
+        task_id,
+        emitter,
+    )
+    .await?;
 
     if !success {
         // EACCES: permission denied — retry with a user-local --prefix so
@@ -683,7 +700,14 @@ async fn install_npm_global_package_streaming(
                 "File conflict, retrying with --force...",
             );
             let (retry_success, retry_stderr) = run_npm_streaming(
-                &["install", "-g", "--force", &registry_arg, package],
+                &[
+                    "install",
+                    "-g",
+                    "--force",
+                    NPM_INCLUDE_OPTIONAL,
+                    &registry_arg,
+                    package,
+                ],
                 task_id,
                 emitter,
             )
@@ -756,11 +780,21 @@ async fn install_npm_to_user_prefix_streaming(
         emitter,
         task_id,
         AgentInstallEventKind::Log,
-        format!("$ npm install -g --prefix={} {package}", prefix.display()),
+        format!(
+            "$ npm install -g {NPM_INCLUDE_OPTIONAL} --prefix={} {package}",
+            prefix.display()
+        ),
     );
 
     let (success, stderr) = run_npm_streaming(
-        &["install", "-g", &prefix_arg, registry_arg, package],
+        &[
+            "install",
+            "-g",
+            NPM_INCLUDE_OPTIONAL,
+            &prefix_arg,
+            registry_arg,
+            package,
+        ],
         task_id,
         emitter,
     )
@@ -781,6 +815,7 @@ async fn install_npm_to_user_prefix_streaming(
                     "install",
                     "-g",
                     "--force",
+                    NPM_INCLUDE_OPTIONAL,
                     &prefix_arg,
                     registry_arg,
                     package,
