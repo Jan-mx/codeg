@@ -841,6 +841,7 @@
       "customInstallSubmit": "تثبيت"
     },
     "errors": {
+      "windowsFileLocked": "ملفات {name} قيد الاستخدام بواسطة جلسة قيد التشغيل، لذا لا يمكن لـ Windows استبدالها. أغلق جميع جلسات {name} ثم حاول مرة أخرى.",
       "nativeJsonMustBeObject": "يجب أن يكون إعداد JSON الأصلي كائنًا",
       "nativeJsonInvalid": "خطأ في تنسيق إعداد JSON الأصلي: {message}",
       "openCodeAuthMustBeObject": "يجب أن يكون OpenCode auth.json كائن JSON",

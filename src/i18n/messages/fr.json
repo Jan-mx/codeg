@@ -841,6 +841,7 @@
       "customInstallSubmit": "Installer"
     },
     "errors": {
+      "windowsFileLocked": "Les fichiers de {name} sont utilisés par une session en cours, Windows ne peut donc pas les remplacer. Fermez toutes les sessions {name}, puis réessayez.",
       "nativeJsonMustBeObject": "La configuration JSON native doit être un objet",
       "nativeJsonInvalid": "Erreur de format de configuration JSON native : {message}",
       "openCodeAuthMustBeObject": "OpenCode auth.json doit être un objet JSON",

@@ -841,6 +841,7 @@
       "customInstallSubmit": "インストール"
     },
     "errors": {
+      "windowsFileLocked": "{name} のファイルは実行中のセッションが使用中のため、Windows では置き換えられません。{name} のセッションをすべて終了してから再試行してください。",
       "nativeJsonMustBeObject": "ネイティブJSON設定はオブジェクトである必要があります",
       "nativeJsonInvalid": "ネイティブJSON設定の形式エラー: {message}",
       "openCodeAuthMustBeObject": "OpenCode の auth.json はJSONオブジェクトである必要があります",

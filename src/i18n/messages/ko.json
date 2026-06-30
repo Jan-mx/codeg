@@ -841,6 +841,7 @@
       "customInstallSubmit": "설치"
     },
     "errors": {
+      "windowsFileLocked": "{name}의 파일이 실행 중인 세션에서 사용 중이어서 Windows에서 교체할 수 없습니다. 모든 {name} 세션을 닫은 후 다시 시도하세요.",
       "nativeJsonMustBeObject": "네이티브 JSON 구성은 객체여야 합니다",
       "nativeJsonInvalid": "네이티브 JSON 구성 형식 오류: {message}",
       "openCodeAuthMustBeObject": "OpenCode auth.json은 JSON 객체여야 합니다",

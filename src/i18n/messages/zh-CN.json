@@ -841,6 +841,7 @@
       "customInstallSubmit": "安装"
     },
     "errors": {
+      "windowsFileLocked": "{name} 的程序文件正被运行中的会话占用，Windows 下无法替换。请先关闭所有 {name} 会话后重试。",
       "nativeJsonMustBeObject": "原生 JSON 配置必须是对象",
       "nativeJsonInvalid": "原生 JSON 配置格式错误：{message}",
       "openCodeAuthMustBeObject": "OpenCode auth.json 必须是 JSON 对象",
