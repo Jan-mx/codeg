@@ -46,11 +46,16 @@ export function normalizeAbsPath(path: string): string {
 
   if (drive || isUnc || isPosix) {
     const body = drive ? normalized.slice(2) : normalized
+    // ".." floors at the root designator. A UNC root is //server/share —
+    // its two leading segments are part of the designator (Windows resolves
+    // ".." at a share root to the share root itself), so they are protected
+    // from popping just like "/" and "C:/" are.
+    const floor = isUnc ? 2 : 0
     const parts: string[] = []
     for (const segment of body.split("/")) {
       if (!segment || segment === ".") continue
       if (segment === "..") {
-        if (parts.length > 0) parts.pop()
+        if (parts.length > floor) parts.pop()
         continue
       }
       parts.push(segment)
@@ -119,7 +124,8 @@ export interface OwningFolderMatch {
 
 /**
  * Boundary-safe containment: true when `absPath` names a file strictly
- * inside `rootPath`. Windows drive paths compare case-insensitively; the
+ * inside `rootPath`. Windows drive paths AND UNC shares compare
+ * case-insensitively (both live on case-insensitive filesystems); the
  * root itself is not "under" itself. Both inputs are normalized here, so
  * callers may pass raw values.
  */
@@ -128,7 +134,7 @@ export function isPathUnderRoot(absPath: string, rootPath: string): boolean {
   const root = normalizeAbsPath(rootPath)
   if (!root || !isAbsoluteFilePath(root)) return false
   const prefix = root.endsWith("/") ? root : `${root}/`
-  if (WINDOWS_DRIVE_PREFIX.test(prefix)) {
+  if (WINDOWS_DRIVE_PREFIX.test(prefix) || prefix.startsWith("//")) {
     return path.toLowerCase().startsWith(prefix.toLowerCase())
   }
   return path.startsWith(prefix)

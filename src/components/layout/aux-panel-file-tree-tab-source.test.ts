@@ -130,6 +130,15 @@ describe("file-workspace-panel routes active-tab openers by tab folder", () => {
     )
   })
 
+  it("excludes protocol-relative // hrefs from the local anchor branch", () => {
+    // "//host/…" is a web url; collapsing it into a local path would read
+    // the wrong file. The isRelative gate must reject the double-slash form.
+    const gateIdx = panelSource.indexOf("const isRelative =")
+    expect(gateIdx).toBeGreaterThan(-1)
+    const gate = panelSource.slice(gateIdx, gateIdx + 200)
+    expect(gate).toMatch(/\^\\\/\\\//)
+  })
+
   it("treats protocol-relative // image srcs as remote, never local file IO", () => {
     // A "/"-prefixed src is an absolute local path under the new model,
     // but "//host/…" is a protocol-relative URL — routing it into

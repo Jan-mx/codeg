@@ -92,8 +92,11 @@ function splitPathAndLine(rawPath: string): LocalFileTarget {
 }
 
 function isLocalPathLike(path: string): boolean {
+  // "//host/…" is protocol-relative — a WEB url, not a local path. It must
+  // fall through to the external-URL route (the browser resolves it against
+  // the page protocol), never into local file IO.
   return (
-    path.startsWith("/") ||
+    (path.startsWith("/") && !path.startsWith("//")) ||
     path.startsWith("./") ||
     path.startsWith("../") ||
     path.startsWith("~/") ||

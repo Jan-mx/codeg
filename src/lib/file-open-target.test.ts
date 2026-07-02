@@ -53,6 +53,12 @@ describe("normalizeAbsPath", () => {
       "//server/share/x.ts"
     )
   })
+
+  it("floors .. at the UNC share root — the designator segments never pop", () => {
+    expect(normalizeAbsPath("//server/share/../x")).toBe("//server/share/x")
+    expect(normalizeAbsPath("//server/share/sub/../x")).toBe("//server/share/x")
+    expect(normalizeAbsPath("//server/share/..")).toBe("//server/share")
+  })
 })
 
 describe("splitAbsPath", () => {
@@ -173,6 +179,16 @@ describe("findOwningFolder", () => {
     expect(findOwningFolder("/repo/sub/../src/a.ts", folders)).toMatchObject({
       folderId: 1,
       relPath: "src/a.ts",
+    })
+  })
+
+  it("matches UNC share roots case-insensitively", () => {
+    const uncFolders = [{ id: 7, path: "//server/share" }]
+    expect(
+      findOwningFolder("//Server/Share/Dir/x.ts", uncFolders)
+    ).toMatchObject({
+      folderId: 7,
+      relPath: "Dir/x.ts",
     })
   })
 })

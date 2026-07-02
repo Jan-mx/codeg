@@ -19,9 +19,9 @@ describe("classifyResourceKind", () => {
     ["./relative.md", "file"],
     ["../up/one.md", "file"],
     ["~/home/config.toml", "file"],
-    // Protocol-relative URLs begin with "/", so link-safety's isLocalPathLike
-    // routes them to the file opener — the file icon matches that behavior.
-    ["//cdn.example.com/app.js", "file"],
+    // Protocol-relative URLs resolve against the page protocol — link-safety
+    // routes them to the browser, so the web icon matches that behavior.
+    ["//cdn.example.com/app.js", "web"],
     // Web
     ["http://example.com", "web"],
     ["https://example.com/docs?q=1#frag", "web"],

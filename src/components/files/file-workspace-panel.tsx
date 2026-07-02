@@ -1857,8 +1857,11 @@ export function FileWorkspacePanel() {
                 ),
                 // eslint-disable-next-line @typescript-eslint/no-unused-vars
                 a: ({ node, href, children, ...aProps }) => {
+                  // Protocol-relative "//host/…" is a WEB url — exclude it
+                  // from the local branch (^\/\/) so it opens externally
+                  // instead of being collapsed into a local file path.
                   const isRelative =
-                    href && !/^[a-z][a-z0-9+.-]*:|^#/i.test(href)
+                    href && !/^[a-z][a-z0-9+.-]*:|^#|^\/\//i.test(href)
                   if (isRelative && href) {
                     return (
                       <a
@@ -1883,7 +1886,9 @@ export function FileWorkspacePanel() {
                   return (
                     <a
                       {...aProps}
-                      href={href}
+                      // Pin protocol-relative urls to https: the webview's
+                      // own scheme (tauri://) would otherwise hijack them.
+                      href={href?.startsWith("//") ? `https:${href}` : href}
                       target="_blank"
                       rel="noopener noreferrer"
                     >
