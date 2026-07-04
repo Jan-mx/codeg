@@ -559,11 +559,13 @@ const ConversationTabView = memo(function ConversationTabView({
     if (!wasPrompting || connStatus === "prompting") return
 
     // Turn completed — promote liveMessage + optimisticTurns to localTurns.
-    // Pass conn.liveMessage explicitly (belt-and-suspenders): the sink already
-    // wrote the final chunk into session.liveMessage synchronously from the
-    // dispatch, so COMPLETE_TURN's fallback would also be current — but the
-    // connections-context value is authoritative, so pass it directly.
-    completeTurn(effectiveConversationId, conn.liveMessage)
+    // Don't pass conn.liveMessage: this panel no longer subscribes to it (the
+    // connection snapshot is stable across streaming tokens — see useConnection),
+    // so reading it here would be stale. COMPLETE_TURN falls back to
+    // session.liveMessage, which the connection dispatch's sink wrote
+    // synchronously as the final chunk landed (turn_complete flushes the stream
+    // queue BEFORE the status change), so it already holds the final message.
+    completeTurn(effectiveConversationId)
 
     // Cancel previous metadata sync (handles rapid consecutive turns)
     syncCancelRef.current?.()
@@ -576,13 +578,7 @@ const ConversationTabView = memo(function ConversationTabView({
         effectiveConversationId
       )
     }
-  }, [
-    completeTurn,
-    connStatus,
-    conn.liveMessage,
-    effectiveConversationId,
-    syncTurnMetadata,
-  ])
+  }, [completeTurn, connStatus, effectiveConversationId, syncTurnMetadata])
 
   // Auto-send queued messages when agent finishes responding.
   // Refs are synced via useEffect; the auto-send effect is declared

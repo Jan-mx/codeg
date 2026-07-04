@@ -166,10 +166,10 @@ type Action =
        * Optional authoritative liveMessage from the caller. `session.liveMessage`
        * is kept current by the connection dispatch's liveMessage sink (writes
        * synchronously as each batch is applied — see `registerLiveMessageSink`),
-       * so the fallback would normally already hold the final chunk. When
-       * provided (the panel's connStatus-edge effect), this value is preferred
-       * as the authoritative source; the background turn_complete listener
-       * omits it and relies on the sink-synced `session.liveMessage`.
+       * so the fallback already holds the final chunk. The conversation panel
+       * therefore omits it (it no longer subscribes to conn.liveMessage) and
+       * relies on the sink-synced value; the sub-agent dialog's own child bridge
+       * still passes it explicitly. When provided, it is preferred.
        */
       liveMessage?: LiveMessage | null
     }
@@ -1020,9 +1020,10 @@ function reducer(
       // is kept in sync by the connection dispatch's liveMessage sink (see
       // `registerLiveMessageSink` in the connections context), which writes
       // synchronously as each batch is applied — so by turn-end it already holds
-      // the final chunk. The panel's connStatus-edge effect still passes
-      // `conn.liveMessage` explicitly (belt-and-suspenders); the background
-      // turn_complete listener passes nothing and relies on the sink-synced value.
+      // the final chunk. The conversation panel omits it (it no longer subscribes
+      // to conn.liveMessage) and relies on this sink-synced fallback; the
+      // background turn_complete listener likewise passes nothing. The sub-agent
+      // dialog's child bridge still passes its liveMessage explicitly.
       const sourceLiveMessage =
         action.liveMessage !== undefined
           ? action.liveMessage
