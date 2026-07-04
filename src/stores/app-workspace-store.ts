@@ -1,4 +1,5 @@
 import { create } from "zustand"
+import { registerBackendScopedStoreReset } from "@/stores/backend-scoped-store-reset"
 import {
   getFolder as apiGetFolder,
   listAllConversations,
@@ -407,10 +408,21 @@ export const useAppWorkspaceStore = create<AppWorkspaceStoreState>()(
 )
 
 /**
- * Test-only: restore the pristine initial state (including tombstones).
- * Production code never resets the store — it lives for the window's lifetime.
+ * Restore the pristine initial state (including tombstones). Used by tests, and
+ * by the backend-scoped reset registry if a realm's backend identity ever
+ * changes (an invariant-violating transition that does not occur today — see
+ * `RemoteConnectionGate`). In normal operation the store lives for the window's
+ * lifetime and is never reset.
  */
 export function resetAppWorkspaceStore() {
+  // NOTE: this clears state only; `fetchFolders` / `refreshConversations` have no
+  // backend epoch, so a pre-reset in-flight fetch could re-commit stale data. Moot
+  // today (the backend-identity guard never fires); a real in-place backend switch
+  // would need per-store fetch epochs. See `RemoteConnectionGate`.
   deletedIds.clear()
   useAppWorkspaceStore.setState(useAppWorkspaceStore.getInitialState(), true)
 }
+
+// Reset this backend-scoped store on any (currently-unreachable) in-realm
+// backend switch. See `backend-scoped-store-reset.ts`.
+registerBackendScopedStoreReset(resetAppWorkspaceStore)

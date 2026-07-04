@@ -1,6 +1,7 @@
 import { create } from "zustand"
 import { useShallow } from "zustand/react/shallow"
 import { useAppWorkspaceStore } from "@/stores/app-workspace-store"
+import { registerBackendScopedStoreReset } from "@/stores/backend-scoped-store-reset"
 import {
   getFolderConversation,
   listOpenedTabs,
@@ -1519,8 +1520,11 @@ export function useTabActions() {
 }
 
 /**
- * Test-only: restore pristine state (store + module coordination vars +
- * injected runtime). Production never resets — the store lives for the window.
+ * Restore pristine state (store + module coordination vars + injected runtime).
+ * Used by tests, and by the backend-scoped reset registry if a realm's backend
+ * identity ever changes (an invariant-violating transition that does not occur
+ * today — see `RemoteConnectionGate`). In normal operation the store lives for
+ * the window's lifetime and is never reset.
  */
 export function resetTabStore() {
   if (saveTimer) {
@@ -1544,6 +1548,10 @@ export function resetTabStore() {
   // fields reset to their initial values.
   useTabStore.setState(initialTabState())
 }
+
+// Reset this backend-scoped store on any (currently-unreachable) in-realm
+// backend switch. See `backend-scoped-store-reset.ts`.
+registerBackendScopedStoreReset(resetTabStore)
 
 /**
  * Standalone `applyRemoteSnapshot` (not a store method: it is only called

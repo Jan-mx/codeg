@@ -4,6 +4,7 @@ import type {
   ToolCallInfo,
 } from "@/contexts/acp-connections-context"
 import { getFolderConversation } from "@/lib/api"
+import { registerBackendScopedStoreReset } from "@/stores/backend-scoped-store-reset"
 import type {
   AgentExecutionStats,
   DbConversationDetail,
@@ -2026,8 +2027,19 @@ export function useConversationRuntimeActions(): RuntimeActions {
   return useConversationRuntimeStore((s) => s.actions)
 }
 
-/** Test-only: reset store state + module-level caches to a clean slate. */
+/**
+ * Reset store state + module-level caches to a clean slate. Used by tests, and
+ * by the backend-scoped reset registry if a realm's backend identity ever
+ * changes (an invariant-violating transition that does not occur today — see
+ * `RemoteConnectionGate`). In normal operation the store lives for the window's
+ * lifetime and is never reset.
+ */
 export function resetConversationRuntimeStore(): void {
+  // NOTE: clearing (vs. epoch-bumping) means a pre-reset in-flight fetch could
+  // re-match a post-reset generation and commit stale detail. Harmless today —
+  // the only production caller (the backend-identity guard) never fires and tests
+  // have no concurrent fetches — but a real in-place backend switch would need a
+  // backend epoch here. See `RemoteConnectionGate`.
   fetchGeneration.clear()
   timelineCache = new WeakMap()
   useConversationRuntimeStore.setState({
@@ -2035,3 +2047,7 @@ export function resetConversationRuntimeStore(): void {
     conversationIdByExternalId: new Map(),
   })
 }
+
+// Reset this backend-scoped store on any (currently-unreachable) in-realm
+// backend switch. See `backend-scoped-store-reset.ts`.
+registerBackendScopedStoreReset(resetConversationRuntimeStore)
