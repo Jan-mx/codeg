@@ -2548,7 +2548,8 @@
       },
       "hunkLabel": "مقطع {index}",
       "loadingHunk": "جارٍ تحميل hunk...",
-      "noDiffData": "لا توجد بيانات diff"
+      "noDiffData": "لا توجد بيانات diff",
+      "showRemainingLines": "عرض {count} سطر إضافي"
     },
     "conversationContextBar": {
       "folderTitle": "مجلد العمل",

@@ -2548,7 +2548,8 @@
       },
       "hunkLabel": "區塊 {index}",
       "loadingHunk": "正在載入區塊...",
-      "noDiffData": "無差異資料"
+      "noDiffData": "無差異資料",
+      "showRemainingLines": "顯示剩餘 {count} 行"
     },
     "conversationContextBar": {
       "folderTitle": "工作資料夾",

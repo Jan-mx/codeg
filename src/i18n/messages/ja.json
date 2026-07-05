@@ -2548,7 +2548,8 @@
       },
       "hunkLabel": "ハンク {index}",
       "loadingHunk": "Hunk を読み込み中...",
-      "noDiffData": "Diff データがありません"
+      "noDiffData": "Diff データがありません",
+      "showRemainingLines": "残り {count} 行を表示"
     },
     "conversationContextBar": {
       "folderTitle": "作業フォルダ",

@@ -2548,7 +2548,8 @@
       },
       "hunkLabel": "Hunk {index}",
       "loadingHunk": "Loading hunk...",
-      "noDiffData": "No diff data"
+      "noDiffData": "No diff data",
+      "showRemainingLines": "Show {count} more lines"
     },
     "conversationContextBar": {
       "folderTitle": "Working folder",

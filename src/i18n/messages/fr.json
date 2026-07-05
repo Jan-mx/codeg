@@ -2548,7 +2548,8 @@
       },
       "hunkLabel": "Bloc {index}",
       "loadingHunk": "Chargement du hunk...",
-      "noDiffData": "Aucune donnée diff"
+      "noDiffData": "Aucune donnée diff",
+      "showRemainingLines": "Afficher {count} lignes de plus"
     },
     "conversationContextBar": {
       "folderTitle": "Dossier de travail",

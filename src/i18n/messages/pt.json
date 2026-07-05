@@ -2548,7 +2548,8 @@
       },
       "hunkLabel": "Bloco {index}",
       "loadingHunk": "Carregando hunk...",
-      "noDiffData": "Sem dados de diff"
+      "noDiffData": "Sem dados de diff",
+      "showRemainingLines": "Mostrar mais {count} linhas"
     },
     "conversationContextBar": {
       "folderTitle": "Pasta de trabalho",

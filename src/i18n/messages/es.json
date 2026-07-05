@@ -2548,7 +2548,8 @@
       },
       "hunkLabel": "Bloque {index}",
       "loadingHunk": "Cargando hunk...",
-      "noDiffData": "Sin datos de diff"
+      "noDiffData": "Sin datos de diff",
+      "showRemainingLines": "Mostrar {count} líneas más"
     },
     "conversationContextBar": {
       "folderTitle": "Carpeta de trabajo",

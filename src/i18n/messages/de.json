@@ -2548,7 +2548,8 @@
       },
       "hunkLabel": "Block {index}",
       "loadingHunk": "Hunk wird geladen...",
-      "noDiffData": "Keine Diff-Daten"
+      "noDiffData": "Keine Diff-Daten",
+      "showRemainingLines": "{count} weitere Zeilen anzeigen"
     },
     "conversationContextBar": {
       "folderTitle": "Arbeitsordner",

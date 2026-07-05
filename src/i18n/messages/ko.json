@@ -2548,7 +2548,8 @@
       },
       "hunkLabel": "청크 {index}",
       "loadingHunk": "Hunk 로딩 중...",
-      "noDiffData": "Diff 데이터 없음"
+      "noDiffData": "Diff 데이터 없음",
+      "showRemainingLines": "나머지 {count}줄 표시"
     },
     "conversationContextBar": {
       "folderTitle": "작업 폴더",

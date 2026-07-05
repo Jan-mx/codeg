@@ -2548,7 +2548,8 @@
       },
       "hunkLabel": "代码块 {index}",
       "loadingHunk": "正在加载代码块...",
-      "noDiffData": "无差异数据"
+      "noDiffData": "无差异数据",
+      "showRemainingLines": "显示剩余 {count} 行"
     },
     "conversationContextBar": {
       "folderTitle": "工作文件夹",
