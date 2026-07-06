@@ -200,7 +200,9 @@ async fn dispatch_command(
                         sender_id,
                         target,
                         conn_mgr,
+                        emitter,
                         bridge,
+                        data_dir,
                         lang,
                         prefix,
                     })
@@ -223,7 +225,9 @@ async fn dispatch_command(
                         sender_id,
                         target,
                         conn_mgr,
+                        emitter,
                         bridge,
+                        data_dir,
                         lang,
                         prefix,
                     })

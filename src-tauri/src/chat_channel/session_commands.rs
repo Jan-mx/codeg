@@ -15,12 +15,14 @@ use super::types::{
 use crate::acp::manager::ConnectionManager;
 use crate::acp::registry::all_acp_agents;
 use crate::acp::types::PromptInputBlock;
-use crate::db::entities::conversation;
+use crate::db::entities::{chat_channel_thread_binding, conversation};
 use crate::db::service::{
     conversation_service, folder_service, sender_context_service, thread_binding_service,
 };
 use crate::db::AppDatabase;
 use crate::models::agent::AgentType;
+use crate::models::conversation::DbConversationSummary;
+use crate::models::folder::FolderDetail;
 use crate::web::event_bridge::EventEmitter;
 
 pub struct FollowupRequest<'a> {
@@ -30,7 +32,9 @@ pub struct FollowupRequest<'a> {
     pub sender_id: &'a str,
     pub target: &'a ChannelMessageTarget,
     pub conn_mgr: &'a ConnectionManager,
+    pub emitter: &'a EventEmitter,
     pub bridge: &'a Arc<Mutex<SessionBridge>>,
+    pub data_dir: &'a Path,
     pub lang: Lang,
     pub prefix: &'a str,
 }
@@ -601,7 +605,7 @@ pub async fn handle_task(
             tool_call_inputs: std::collections::HashMap::new(),
             delegation_rendered: std::collections::HashSet::new(),
             last_flushed: Instant::now(),
-            pending_prompt: Some(task_description.to_string()),
+            pending_prompt: None,
             permission_pending: None,
         };
         bridge.lock().await.register(connection_id.clone(), session);
@@ -614,9 +618,47 @@ pub async fn handle_task(
             channel_id,
             sender_id,
             Some(conv.id),
-            Some(connection_id),
+            Some(connection_id.clone()),
         )
         .await;
+    }
+
+    if let Err(e) = send_chat_prompt_linked(
+        db,
+        conn_mgr,
+        &connection_id,
+        folder_id,
+        conv.id,
+        task_description,
+    )
+    .await
+    {
+        bridge.lock().await.remove(&connection_id);
+        if session_target.is_telegram_forum_topic() {
+            if let Ok(Some(binding)) =
+                thread_binding_service::get_by_target(db, &session_target).await
+            {
+                let _ = thread_binding_service::clear_connection(db, binding.id).await;
+            }
+        } else {
+            let _ = sender_context_service::clear_session(db, channel_id, sender_id).await;
+        }
+        let _ = conn_mgr.cancel(db, &connection_id).await;
+        let _ = conversation_service::update_status(
+            db,
+            conv.id,
+            conversation::ConversationStatus::Cancelled,
+        )
+        .await;
+        return CommandMessageResult {
+            message: RichMessage::error(format!(
+                "{}{}",
+                i18n::failed_to_send_message_label(lang),
+                e
+            )),
+            response_target: session_target,
+            extra_responses: Vec::new(),
+        };
     }
 
     let started_message =
@@ -1028,6 +1070,10 @@ pub async fn handle_permission_response(
 // ── follow-up (non-command text) ──
 
 pub async fn handle_followup(req: FollowupRequest<'_>) -> RichMessage {
+    if req.target.is_telegram_forum_topic() {
+        return handle_topic_followup(req).await;
+    }
+
     let session_ref = match command_session_ref(
         req.db,
         req.bridge,
@@ -1074,11 +1120,7 @@ pub async fn handle_followup(req: FollowupRequest<'_>) -> RichMessage {
     }
 
     // Send prompt to agent
-    let blocks = vec![PromptInputBlock::Text {
-        text: req.text.to_string(),
-    }];
-
-    if let Err(e) = req.conn_mgr.send_prompt(&connection_id, blocks).await {
+    if let Err(e) = send_chat_prompt(req.conn_mgr, &connection_id, req.text).await {
         // A turn is already in flight on this (shared) connection — another
         // client, or a previous prompt still running. This is transient: the
         // connection is alive, so do NOT tear down the bridge/session. Tell the
@@ -1097,6 +1139,191 @@ pub async fn handle_followup(req: FollowupRequest<'_>) -> RichMessage {
         return RichMessage::error(format!(
             "{}{e}",
             i18n::failed_to_send_message_label(req.lang)
+        ));
+    }
+
+    RichMessage::info(i18n::message_sent(req.lang))
+}
+
+async fn handle_topic_followup(req: FollowupRequest<'_>) -> RichMessage {
+    let binding = match thread_binding_service::get_by_target(req.db, req.target).await {
+        Ok(binding) => binding,
+        Err(e) => {
+            return RichMessage::error(format!(
+                "{}{}",
+                i18n::failed_to_load_context_label(req.lang),
+                e
+            ));
+        }
+    };
+
+    let Some(binding) = binding else {
+        return RichMessage::info(no_topic_session_use_task_or_resume(req.lang, req.prefix));
+    };
+
+    let bridge_session = {
+        let guard = req.bridge.lock().await;
+        guard
+            .find_by_target(req.target)
+            .map(|session| CommandSessionRef {
+                connection_id: session.connection_id.clone(),
+                conversation_id: Some(session.conversation_id),
+                binding_id: Some(binding.id),
+            })
+    };
+
+    if let Some(session_ref) = bridge_session {
+        return send_followup_to_session(req, session_ref).await;
+    }
+
+    if let Some(connection_id) = binding.connection_id.as_deref() {
+        let bridge_has_connection = {
+            let guard = req.bridge.lock().await;
+            guard.get(connection_id).is_some()
+        };
+        if bridge_has_connection {
+            return send_followup_to_session(
+                req,
+                CommandSessionRef {
+                    connection_id: connection_id.to_string(),
+                    conversation_id: Some(binding.conversation_id),
+                    binding_id: Some(binding.id),
+                },
+            )
+            .await;
+        }
+        let _ = thread_binding_service::clear_connection(req.db, binding.id).await;
+    }
+
+    resume_topic_binding_and_send_followup(req, binding).await
+}
+
+async fn send_followup_to_session(
+    req: FollowupRequest<'_>,
+    session_ref: CommandSessionRef,
+) -> RichMessage {
+    let connection_id = session_ref.connection_id;
+    {
+        let bridge_guard = req.bridge.lock().await;
+        if bridge_guard.get(&connection_id).is_none() {
+            drop(bridge_guard);
+            if let Some(binding_id) = session_ref.binding_id {
+                let _ = thread_binding_service::clear_connection(req.db, binding_id).await;
+            } else {
+                let _ =
+                    sender_context_service::clear_session(req.db, req.channel_id, req.sender_id)
+                        .await;
+            }
+            return RichMessage::info(i18n::session_connection_lost(req.lang, req.prefix));
+        }
+    }
+
+    if let Err(e) = send_chat_prompt(req.conn_mgr, &connection_id, req.text).await {
+        if matches!(e, crate::acp::error::AcpError::TurnInProgress) {
+            return RichMessage::info(i18n::agent_busy_retry(req.lang).to_string());
+        }
+        req.bridge.lock().await.remove(&connection_id);
+        if let Some(binding_id) = session_ref.binding_id {
+            let _ = thread_binding_service::clear_connection(req.db, binding_id).await;
+        } else {
+            let _ =
+                sender_context_service::clear_session(req.db, req.channel_id, req.sender_id).await;
+        }
+        return RichMessage::error(format!(
+            "{}{}",
+            i18n::failed_to_send_message_label(req.lang),
+            e
+        ));
+    }
+
+    RichMessage::info(i18n::message_sent(req.lang))
+}
+
+async fn resume_topic_binding_and_send_followup(
+    req: FollowupRequest<'_>,
+    binding: chat_channel_thread_binding::Model,
+) -> RichMessage {
+    let conv = match conversation_service::get_by_id(req.db, binding.conversation_id).await {
+        Ok(conv) => conv,
+        Err(_) => return RichMessage::info(i18n::conversation_not_found(req.lang)),
+    };
+    let (connection_id, folder) = match spawn_chat_connection_for_conversation(
+        req.db,
+        &conv,
+        req.channel_id,
+        req.sender_id,
+        req.target,
+        req.conn_mgr,
+        req.emitter,
+        req.data_dir,
+    )
+    .await
+    {
+        Ok(started) => started,
+        Err(e) => return RichMessage::error(topic_resume_failed(req.lang, conv.id, &e)),
+    };
+
+    let session = ActiveSession {
+        channel_id: req.channel_id,
+        sender_id: req.sender_id.to_string(),
+        target: req.target.clone(),
+        conversation_id: conv.id,
+        connection_id: connection_id.clone(),
+        agent_type: conv.agent_type,
+        content_buffer: String::new(),
+        tool_calls: Vec::new(),
+        tool_call_inputs: std::collections::HashMap::new(),
+        delegation_rendered: std::collections::HashSet::new(),
+        last_flushed: Instant::now(),
+        pending_prompt: None,
+        permission_pending: None,
+    };
+    req.bridge
+        .lock()
+        .await
+        .register(connection_id.clone(), session);
+
+    if let Err(e) = thread_binding_service::upsert_for_target(
+        req.db,
+        req.target,
+        "telegram",
+        conv.id,
+        Some(connection_id.clone()),
+        req.sender_id,
+        conv.title.clone(),
+    )
+    .await
+    {
+        let _ = req.conn_mgr.cancel(req.db, &connection_id).await;
+        req.bridge.lock().await.remove(&connection_id);
+        return RichMessage::error(format!("Failed to bind topic: {e}"));
+    }
+
+    let _ = sender_context_service::update_folder(
+        req.db,
+        req.channel_id,
+        req.sender_id,
+        Some(conv.folder_id),
+    )
+    .await;
+
+    if let Err(e) = send_chat_prompt_linked(
+        req.db,
+        req.conn_mgr,
+        &connection_id,
+        folder.id,
+        conv.id,
+        req.text,
+    )
+    .await
+    {
+        req.bridge.lock().await.remove(&connection_id);
+        let _ = thread_binding_service::clear_connection(req.db, binding.id).await;
+        let _ = req.conn_mgr.cancel(req.db, &connection_id).await;
+        return RichMessage::error(format!(
+            "{}{}",
+            i18n::failed_to_send_message_label(req.lang),
+            e
         ));
     }
 
@@ -1246,6 +1473,81 @@ async fn build_chat_session_runtime_env(
     .await
 }
 
+#[allow(clippy::too_many_arguments)]
+async fn spawn_chat_connection_for_conversation(
+    db: &DatabaseConnection,
+    conv: &DbConversationSummary,
+    channel_id: i32,
+    sender_id: &str,
+    target: &ChannelMessageTarget,
+    conn_mgr: &ConnectionManager,
+    emitter: &EventEmitter,
+    data_dir: &Path,
+) -> Result<(String, FolderDetail), String> {
+    let folder = folder_service::get_folder_by_id(db, conv.folder_id)
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| i18n::folder_not_found(Lang::En).to_string())?;
+    let runtime_env =
+        build_chat_session_runtime_env(db, conv.agent_type, conv.external_id.as_deref(), data_dir)
+            .await
+            .map_err(|e| e.to_string())?;
+    let owner_label = owner_label_for(channel_id, sender_id, target);
+    let connection_id = conn_mgr
+        .spawn_agent(
+            conv.agent_type,
+            Some(folder.path.clone()),
+            conv.external_id.clone(),
+            runtime_env,
+            owner_label,
+            emitter.clone(),
+            None,
+            BTreeMap::new(),
+        )
+        .await
+        .map_err(|e| e.to_string())?;
+
+    Ok((connection_id, folder))
+}
+
+async fn send_chat_prompt(
+    conn_mgr: &ConnectionManager,
+    connection_id: &str,
+    text: &str,
+) -> Result<(), crate::acp::error::AcpError> {
+    conn_mgr
+        .send_prompt(
+            connection_id,
+            vec![PromptInputBlock::Text {
+                text: text.to_string(),
+            }],
+        )
+        .await
+}
+
+async fn send_chat_prompt_linked(
+    db: &DatabaseConnection,
+    conn_mgr: &ConnectionManager,
+    connection_id: &str,
+    folder_id: i32,
+    conversation_id: i32,
+    text: &str,
+) -> Result<(), crate::acp::error::AcpError> {
+    conn_mgr
+        .send_prompt_linked(
+            &AppDatabase { conn: db.clone() },
+            connection_id,
+            vec![PromptInputBlock::Text {
+                text: text.to_string(),
+            }],
+            Some(folder_id),
+            Some(conversation_id),
+            None,
+        )
+        .await
+        .map(|_| ())
+}
+
 fn topic_has_active_session(lang: Lang, prefix: &str) -> String {
     match lang {
         Lang::ZhCn | Lang::ZhTw => {
@@ -1275,6 +1577,17 @@ fn topic_create_failed(lang: Lang, detail: &str) -> String {
         ),
         _ => format!(
             "Failed to create Telegram topic: {detail}\nMake sure this chat is a forum supergroup and the bot can manage topics."
+        ),
+    }
+}
+
+fn topic_resume_failed(lang: Lang, conversation_id: i32, detail: &str) -> String {
+    match lang {
+        Lang::ZhCn | Lang::ZhTw => {
+            format!("当前 topic 已绑定会话 #{conversation_id}，但恢复 agent 失败：{detail}")
+        }
+        _ => format!(
+            "This topic is bound to conversation #{conversation_id}, but failed to resume the agent: {detail}"
         ),
     }
 }
@@ -1357,6 +1670,7 @@ fn truncate_title(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::acp::connection::ConnectionCommand;
     use crate::db::service::{agent_setting_service, chat_channel_service, sender_context_service};
     use crate::db::test_helpers::{fresh_in_memory_db, seed_conversation, seed_folder};
 
@@ -1653,5 +1967,114 @@ mod tests {
 
         assert!(result.message.body.contains("disabled in settings"));
         assert_eq!(bridge.lock().await.all_sessions().count(), 0);
+    }
+
+    #[tokio::test]
+    async fn linked_chat_prompt_enqueues_initial_task_prompt() {
+        let db = fresh_in_memory_db().await;
+        let folder_id = seed_folder(&db, "/tmp/codeg-topic-linked-prompt").await;
+        let conv_id = seed_conversation(&db, folder_id, AgentType::OpenCode).await;
+        let conn_mgr = ConnectionManager::new();
+        let mut rx = conn_mgr
+            .insert_test_connection_live(
+                "conn-linked",
+                AgentType::OpenCode,
+                Some(std::path::PathBuf::from("/tmp/codeg-topic-linked-prompt")),
+                EventEmitter::Noop,
+            )
+            .await;
+
+        send_chat_prompt_linked(
+            &db.conn,
+            &conn_mgr,
+            "conn-linked",
+            folder_id,
+            conv_id,
+            "first task prompt",
+        )
+        .await
+        .expect("linked prompt send");
+
+        let command = rx.recv().await.expect("prompt command");
+        let ConnectionCommand::Prompt { blocks, .. } = command else {
+            panic!("expected prompt command");
+        };
+        assert!(matches!(
+            &blocks[0],
+            PromptInputBlock::Text { text } if text == "first task prompt"
+        ));
+    }
+
+    #[tokio::test]
+    async fn topic_followup_uses_active_bound_session() {
+        let db = fresh_in_memory_db().await;
+        let channel_id = seed_chat_channel(&db).await;
+        let folder_id = seed_folder(&db, "/tmp/codeg-topic-followup-active").await;
+        let conv_id = seed_conversation(&db, folder_id, AgentType::OpenCode).await;
+        let target = ChannelMessageTarget::telegram_forum_topic(channel_id, "-100123", "2");
+        thread_binding_service::upsert_for_target(
+            &db.conn,
+            &target,
+            "telegram",
+            conv_id,
+            Some("conn-followup".to_string()),
+            "sender-1",
+            Some("Topic session".to_string()),
+        )
+        .await
+        .expect("thread binding");
+        let conn_mgr = ConnectionManager::new();
+        let mut rx = conn_mgr
+            .insert_test_connection_live(
+                "conn-followup",
+                AgentType::OpenCode,
+                Some(std::path::PathBuf::from("/tmp/codeg-topic-followup-active")),
+                EventEmitter::Noop,
+            )
+            .await;
+        let bridge = Arc::new(Mutex::new(SessionBridge::new()));
+        bridge.lock().await.register(
+            "conn-followup".to_string(),
+            ActiveSession {
+                channel_id,
+                sender_id: "sender-1".to_string(),
+                target: target.clone(),
+                conversation_id: conv_id,
+                connection_id: "conn-followup".to_string(),
+                agent_type: AgentType::OpenCode,
+                content_buffer: String::new(),
+                tool_calls: Vec::new(),
+                tool_call_inputs: std::collections::HashMap::new(),
+                delegation_rendered: std::collections::HashSet::new(),
+                last_flushed: Instant::now(),
+                pending_prompt: None,
+                permission_pending: None,
+            },
+        );
+
+        let message = handle_followup(FollowupRequest {
+            db: &db.conn,
+            text: "continue task",
+            channel_id,
+            sender_id: "sender-1",
+            target: &target,
+            conn_mgr: &conn_mgr,
+            emitter: &EventEmitter::Noop,
+            bridge: &bridge,
+            data_dir: std::path::Path::new("/tmp/codeg-topic-followup-data"),
+            lang: Lang::En,
+            prefix: "/",
+        })
+        .await;
+
+        assert_eq!(message.body, i18n::message_sent(Lang::En));
+        let command = rx.recv().await.expect("prompt command");
+        let ConnectionCommand::Prompt { blocks, .. } = command else {
+            panic!("expected prompt command");
+        };
+        assert!(matches!(
+            &blocks[0],
+            PromptInputBlock::Text { text } if text == "continue task"
+        ));
     }
 }
