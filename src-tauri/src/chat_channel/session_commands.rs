@@ -38,6 +38,7 @@ pub struct FollowupRequest<'a> {
 pub struct CommandMessageResult {
     pub message: RichMessage,
     pub response_target: ChannelMessageTarget,
+    pub extra_responses: Vec<(RichMessage, ChannelMessageTarget)>,
 }
 
 impl CommandMessageResult {
@@ -45,6 +46,7 @@ impl CommandMessageResult {
         Self {
             message,
             response_target: target.clone(),
+            extra_responses: Vec::new(),
         }
     }
 }
@@ -617,10 +619,22 @@ pub async fn handle_task(
         .await;
     }
 
+    let started_message =
+        RichMessage::info(format!("[{}] #{} @ {}", agent_type, conv.id, folder.name,))
+            .with_title(i18n::task_started_title(lang));
+    let extra_responses = if target.is_telegram_general_topic() && session_target != *target {
+        vec![(
+            general_topic_task_created_message(lang, agent_type, conv.id, &folder.name),
+            target.clone(),
+        )]
+    } else {
+        Vec::new()
+    };
+
     CommandMessageResult {
-        message: RichMessage::info(format!("[{}] #{} @ {}", agent_type, conv.id, folder.name,))
-            .with_title(i18n::task_started_title(lang)),
+        message: started_message,
         response_target: session_target,
+        extra_responses,
     }
 }
 
@@ -1263,6 +1277,27 @@ fn topic_create_failed(lang: Lang, detail: &str) -> String {
             "Failed to create Telegram topic: {detail}\nMake sure this chat is a forum supergroup and the bot can manage topics."
         ),
     }
+}
+
+fn general_topic_task_created_message(
+    lang: Lang,
+    agent_type: AgentType,
+    conversation_id: i32,
+    folder_name: &str,
+) -> RichMessage {
+    let body = match lang {
+        Lang::ZhCn | Lang::ZhTw => {
+            format!(
+                "已创建新 topic 并启动任务：[{}] #{} @ {}",
+                agent_type, conversation_id, folder_name
+            )
+        }
+        _ => format!(
+            "Created a new topic and started task: [{}] #{} @ {}",
+            agent_type, conversation_id, folder_name
+        ),
+    };
+    RichMessage::info(body).with_title(i18n::task_started_title(lang))
 }
 
 fn callback_expired_or_invalid(lang: Lang, prefix: &str) -> String {

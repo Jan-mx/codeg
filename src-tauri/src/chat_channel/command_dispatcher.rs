@@ -106,50 +106,56 @@ pub fn spawn_command_dispatcher(
             )
             .await;
 
-            let Some(message) = response.message else {
+            if response.message.is_none() && response.extra_messages.is_empty() {
                 tracing::debug!("[ChatChannel] dispatch result: no response");
                 continue;
             };
 
-            tracing::info!(
-                "[ChatChannel] dispatch result: title={:?}, body_len={}",
-                message.title(),
-                message.body_len()
-            );
+            let mut messages = Vec::new();
+            if let Some(message) = response.message {
+                messages.push((message, response.target));
+            }
+            messages.extend(response.extra_messages);
 
-            // Send response back via the same channel
-            let send_result = match &message {
-                DispatchMessage::Rich(message) => {
-                    manager.send_to_target(&response.target, message).await
-                }
-                DispatchMessage::Interactive(message) => {
-                    manager
-                        .send_interactive_to_target(&response.target, message)
-                        .await
-                }
-            };
-            let (status, error_detail) = match &send_result {
-                Ok(_) => ("sent", None),
-                Err(e) => {
-                    tracing::error!(
-                        "[ChatChannel] failed to send response for {:?} to channel {}: {e}",
-                        text,
-                        cmd.channel_id
-                    );
-                    ("failed", Some(e.to_string()))
-                }
-            };
+            for (message, target) in messages {
+                tracing::info!(
+                    "[ChatChannel] dispatch result: title={:?}, body_len={}",
+                    message.title(),
+                    message.body_len()
+                );
 
-            let _ = chat_channel_message_log_service::create_log(
-                &db_conn,
-                cmd.channel_id,
-                "outbound",
-                "command_response",
-                &message.to_plain_text(),
-                status,
-                error_detail,
-            )
-            .await;
+                // Send response back via the same channel
+                let send_result = match &message {
+                    DispatchMessage::Rich(message) => {
+                        manager.send_to_target(&target, message).await
+                    }
+                    DispatchMessage::Interactive(message) => {
+                        manager.send_interactive_to_target(&target, message).await
+                    }
+                };
+                let (status, error_detail) = match &send_result {
+                    Ok(_) => ("sent", None),
+                    Err(e) => {
+                        tracing::error!(
+                            "[ChatChannel] failed to send response for {:?} to channel {}: {e}",
+                            text,
+                            cmd.channel_id
+                        );
+                        ("failed", Some(e.to_string()))
+                    }
+                };
+
+                let _ = chat_channel_message_log_service::create_log(
+                    &db_conn,
+                    cmd.channel_id,
+                    "outbound",
+                    "command_response",
+                    &message.to_plain_text(),
+                    status,
+                    error_detail,
+                )
+                .await;
+            }
         }
     })
 }
@@ -299,6 +305,11 @@ async fn dispatch_command(
             DispatchResponse {
                 message: Some(DispatchMessage::Rich(result.message)),
                 target: result.response_target,
+                extra_messages: result
+                    .extra_responses
+                    .into_iter()
+                    .map(|(message, target)| (DispatchMessage::Rich(message), target))
+                    .collect(),
             }
         }
         "sessions" => DispatchResponse::current(
@@ -350,6 +361,7 @@ async fn dispatch_command(
 struct DispatchResponse {
     message: Option<DispatchMessage>,
     target: ChannelMessageTarget,
+    extra_messages: Vec<(DispatchMessage, ChannelMessageTarget)>,
 }
 
 impl DispatchResponse {
@@ -357,6 +369,7 @@ impl DispatchResponse {
         Self {
             message: Some(DispatchMessage::Rich(message)),
             target: target.clone(),
+            extra_messages: Vec::new(),
         }
     }
 
@@ -374,6 +387,7 @@ impl DispatchResponse {
                 }
             }),
             target: target.clone(),
+            extra_messages: Vec::new(),
         }
     }
 
@@ -381,6 +395,7 @@ impl DispatchResponse {
         Self {
             message: None,
             target: target.clone(),
+            extra_messages: Vec::new(),
         }
     }
 }
