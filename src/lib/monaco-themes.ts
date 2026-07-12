@@ -2,9 +2,32 @@
 
 import { useEffect, useState } from "react"
 import type { BeforeMount } from "@monaco-editor/react"
+import type { editor as MonacoEditorNs } from "monaco-editor"
 
 export const MONACO_LIGHT_THEME = "codeg-light"
 export const MONACO_DARK_THEME = "codeg-dark"
+
+// Monaco's "unicode highlight" feature boxes characters it deems ambiguous with
+// ASCII or non-basic-ASCII. Its default flags ordinary CJK full-width
+// punctuation — `：` `；` `，` `！` `？` `（` `）` etc. — turning normal
+// Chinese/Japanese prose into a wall of orange boxes (issue #329).
+//
+// We disable the two mechanisms that flag *visible* characters
+// (`ambiguousCharacters`, `nonBasicASCII`) so CJK punctuation renders as plain
+// text on every surface. `invisibleCharacters` is left at its default (on):
+// surfacing zero-width / BOM characters is genuinely useful and never boxes
+// legible text.
+//
+// Tradeoff, made deliberately: this also stops highlighting genuine homoglyph
+// look-alikes (e.g. a Cyrillic `а` posing as `a` in an identifier). For a
+// CJK-first editor the false-positive noise on every line of prose far outweighs
+// that rare hint. Shared by the file editor, diff viewer, and merge editor so
+// they behave consistently.
+export const MONACO_UNICODE_HIGHLIGHT_OPTIONS: MonacoEditorNs.IUnicodeHighlightOptions =
+  {
+    ambiguousCharacters: false,
+    nonBasicASCII: false,
+  }
 
 export const monacoTokenRules = {
   light: [

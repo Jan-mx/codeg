@@ -44,7 +44,11 @@ import { Streamdown } from "streamdown"
 import { readFileBase64 } from "@/lib/api"
 import { normalizeMathDelimiters } from "@/components/ai-elements/message"
 import { useStreamdownPlugins } from "@/components/ai-elements/streamdown-plugins"
-import { defineMonacoThemes, useMonacoThemeSync } from "@/lib/monaco-themes"
+import {
+  defineMonacoThemes,
+  MONACO_UNICODE_HIGHLIGHT_OPTIONS,
+  useMonacoThemeSync,
+} from "@/lib/monaco-themes"
 import { useZoomLevel, useEditorFont } from "@/hooks/use-appearance"
 import { ScrollArea } from "@/components/ui/scroll-area"
 
@@ -2200,6 +2204,7 @@ export function FileWorkspacePanel() {
                 scrollBeyondLastLine: false,
                 scrollBeyondLastColumn: 8,
                 renderLineHighlight: "line",
+                unicodeHighlight: MONACO_UNICODE_HIGHLIGHT_OPTIONS,
                 scrollbar: {
                   horizontal: "auto",
                 },
