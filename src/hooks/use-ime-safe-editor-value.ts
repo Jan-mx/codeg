@@ -38,6 +38,10 @@ export function useImeSafeEditorValue<T>(
   const resumeFrameRef = useRef<number | null>(null)
   const unbindRef = useRef<(() => void) | null>(null)
   const mountedRef = useRef(true)
+  // Keep the latest callback in a ref so editor listeners bound once at mount
+  // never call a stale closure — the hook must not require callers to memoize
+  // `onCompositionChange`.
+  const onCompositionChangeRef = useRef(onCompositionChange)
 
   const cancelResume = useCallback(() => {
     if (resumeFrameRef.current === null) return
@@ -45,16 +49,13 @@ export function useImeSafeEditorValue<T>(
     resumeFrameRef.current = null
   }, [])
 
-  const finishComposition = useCallback(
-    (expectedModelKey?: string) => {
-      const current = composingModelKeyRef.current
-      if (!current || (expectedModelKey && current !== expectedModelKey)) return
-      composingModelKeyRef.current = null
-      if (mountedRef.current) setComposingModelKey(null)
-      onCompositionChange?.(false, current)
-    },
-    [onCompositionChange]
-  )
+  const finishComposition = useCallback((expectedModelKey?: string) => {
+    const current = composingModelKeyRef.current
+    if (!current || (expectedModelKey && current !== expectedModelKey)) return
+    composingModelKeyRef.current = null
+    if (mountedRef.current) setComposingModelKey(null)
+    onCompositionChangeRef.current?.(false, current)
+  }, [])
 
   const bindEditor = useCallback(
     (editor: ImeCompositionEditor | null) => {
@@ -88,7 +89,7 @@ export function useImeSafeEditorValue<T>(
         const startingModelKey = modelKeyRef.current
         composingModelKeyRef.current = startingModelKey
         setComposingModelKey(startingModelKey)
-        onCompositionChange?.(true, startingModelKey)
+        onCompositionChangeRef.current?.(true, startingModelKey)
       })
       endDisposable = editor.onDidCompositionEnd(() => {
         cancelResume()
@@ -108,7 +109,7 @@ export function useImeSafeEditorValue<T>(
       unbind = () => release(true)
       unbindRef.current = unbind
     },
-    [cancelResume, finishComposition, onCompositionChange]
+    [cancelResume, finishComposition]
   )
 
   useEffect(() => {
@@ -126,6 +127,10 @@ export function useImeSafeEditorValue<T>(
     modelKeyRef.current = modelKey
     cancelResume()
   }, [cancelResume, modelKey])
+
+  useEffect(() => {
+    onCompositionChangeRef.current = onCompositionChange
+  }, [onCompositionChange])
 
   return {
     value: composingModelKey === modelKey ? undefined : value,
