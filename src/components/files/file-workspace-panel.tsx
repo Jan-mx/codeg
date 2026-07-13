@@ -8,7 +8,7 @@ import type {
   IDisposable,
   IPosition,
 } from "monaco-editor"
-import type { Monaco, OnMount } from "@monaco-editor/react"
+import type { Monaco, OnChange, OnMount } from "@monaco-editor/react"
 import { toast } from "sonner"
 import { useTranslations } from "next-intl"
 import { useAppWorkspaceStore } from "@/stores/app-workspace-store"
@@ -50,6 +50,7 @@ import {
   useMonacoThemeSync,
 } from "@/lib/monaco-themes"
 import { useZoomLevel, useEditorFont } from "@/hooks/use-appearance"
+import { useImeSafeEditorValue } from "@/hooks/use-ime-safe-editor-value"
 import { ScrollArea } from "@/components/ui/scroll-area"
 
 import "@/lib/monaco-local"
@@ -970,7 +971,8 @@ export function FileWorkspacePanel() {
     openFilePreview,
     openWorkingTreeDiff,
     saveActiveFile,
-    updateActiveFileContent,
+    setFileTabComposing,
+    updateFileTabContent,
   } = useWorkspaceActions()
   const tabs = useTabStore((s) => s.tabs)
   const activeTabId = useTabStore((s) => s.activeTabId)
@@ -994,6 +996,10 @@ export function FileWorkspacePanel() {
   // files; files outside every folder are confined to their own directory.
   const previewRoot = owningFolder?.rootPath ?? activeIo?.rootPath ?? null
   const activeScope = activeFileTab?.id ?? "__default__"
+  const editorModelPath = buildMonacoModelPath(
+    activeFileTab?.path ?? null,
+    activeScope
+  )
   const editorRef = useRef<MonacoEditorNs.IStandaloneCodeEditor | null>(null)
   const cursorListenerRef = useRef<{ dispose: () => void } | null>(null)
   const gitChangeDecorationsRef = useRef<string[]>([])
@@ -1043,11 +1049,39 @@ export function FileWorkspacePanel() {
     {}
   )
   const renderedContent = activeFileTab?.content ?? ""
+  const handleCompositionChange = useCallback(
+    (composing: boolean, tabId: string) => {
+      setFileTabComposing(tabId, composing)
+    },
+    [setFileTabComposing]
+  )
+  const {
+    value: imeSafeEditorValue,
+    isComposing,
+    bindEditor: bindImeEditor,
+  } = useImeSafeEditorValue(
+    renderedContent,
+    activeScope,
+    handleCompositionChange
+  )
   const isFileTab = activeFileTab?.kind === "file"
   const fileReadonly = isFileTab ? Boolean(activeFileTab.readonly) : true
   const fileSaveState = isFileTab ? (activeFileTab.saveState ?? "idle") : "idle"
   const fileIsDirty = isFileTab ? Boolean(activeFileTab.isDirty) : false
   const canEdit = isFileTab && !fileReadonly
+  const handleEditorChange: OnChange = useCallback(
+    (value) => {
+      if (!isFileTab) return
+      const currentModelUri = editorRef.current?.getModel()?.uri.toString()
+      const expectedModelUri =
+        monacoRef.current?.Uri.parse(editorModelPath).toString()
+      if (!currentModelUri || currentModelUri !== expectedModelUri) {
+        return
+      }
+      updateFileTabContent(activeScope, value ?? "")
+    },
+    [activeScope, editorModelPath, isFileTab, updateFileTabContent]
+  )
   // The conversation a selection attaches to: the active top-bar tab when it is
   // a conversation (mirrors aux-panel-file-tree-tab's "Attach to Current
   // Session"). Null when no conversation is focused.
@@ -1481,6 +1515,7 @@ export function FileWorkspacePanel() {
   const handleEditorMount: OnMount = useCallback(
     (editorInstance, monaco) => {
       editorRef.current = editorInstance
+      bindImeEditor(editorInstance)
       cursorListenerRef.current?.dispose()
       cursorListenerRef.current = editorInstance.onDidChangeCursorPosition(
         (event) => {
@@ -1577,6 +1612,7 @@ export function FileWorkspacePanel() {
       teardownAddToChat,
       applyGitChangeDecorations,
       applyHiddenAreas,
+      bindImeEditor,
     ]
   )
 
@@ -1690,7 +1726,9 @@ export function FileWorkspacePanel() {
       autoSaveTimerRef.current = null
     }
 
-    if (!canEdit || !fileIsDirty || fileSaveState !== "idle") return
+    if (!canEdit || !fileIsDirty || fileSaveState !== "idle" || isComposing) {
+      return
+    }
 
     autoSaveTimerRef.current = setTimeout(() => {
       const guard = autoSaveGuardRef.current
@@ -1710,7 +1748,14 @@ export function FileWorkspacePanel() {
         autoSaveTimerRef.current = null
       }
     }
-  }, [canEdit, fileIsDirty, fileSaveState, saveActiveFile, renderedContent])
+  }, [
+    canEdit,
+    fileIsDirty,
+    fileSaveState,
+    isComposing,
+    saveActiveFile,
+    renderedContent,
+  ])
 
   useEffect(() => {
     if (!isFileTab) return
@@ -2173,12 +2218,10 @@ export function FileWorkspacePanel() {
             <MonacoEditor
               beforeMount={defineMonacoThemes}
               onMount={handleEditorMount}
-              path={buildMonacoModelPath(activeFileTab.path, activeFileTab.id)}
-              value={renderedContent}
-              onChange={(value) => {
-                if (!isFileTab) return
-                updateActiveFileContent(value ?? "")
-              }}
+              path={editorModelPath}
+              defaultValue={renderedContent}
+              value={isFileTab ? imeSafeEditorValue : renderedContent}
+              onChange={handleEditorChange}
               language={activeFileTab.language}
               theme={editorTheme}
               loading={

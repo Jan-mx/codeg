@@ -135,6 +135,7 @@ pub async fn get_folder_conversation(
     let result = conv_commands::get_folder_conversation_with_live_core(
         &db.conn,
         &state.connection_manager,
+        &state.chat_channel_manager,
         &state.emitter,
         params.conversation_id,
     )
@@ -279,6 +280,12 @@ pub async fn update_conversation_title(
     .await?;
     conv_commands::emit_conversation_upsert(&state.emitter, &state.db.conn, params.conversation_id)
         .await;
+    conv_commands::sync_conversation_title_to_channels_core(
+        &state.db.conn,
+        &state.chat_channel_manager,
+        params.conversation_id,
+    )
+    .await;
     Ok(Json(()))
 }
 

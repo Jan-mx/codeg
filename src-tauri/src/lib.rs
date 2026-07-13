@@ -416,6 +416,7 @@ mod tauri_app {
                     let broadcaster =
                         app.state::<std::sync::Arc<web::event_bridge::WebEventBroadcaster>>();
                     let db_conn = app.state::<db::AppDatabase>().conn.clone();
+                    let data_dir = effective_data_dir.clone();
                     let ccm_ref = ccm.clone_ref();
                     let br = broadcaster.inner().clone();
                     let bus = app
@@ -425,7 +426,9 @@ mod tauri_app {
                     let cm = app.state::<ConnectionManager>().clone_ref();
                     let emitter = web::event_bridge::EventEmitter::Tauri(app.handle().clone());
                     tauri::async_runtime::spawn(async move {
-                        ccm_ref.start_background(br, bus, db_conn, cm, emitter).await;
+                        ccm_ref
+                            .start_background(br, bus, db_conn, data_dir, cm, emitter)
+                            .await;
                     });
                 }
 

@@ -404,6 +404,7 @@ async fn async_main() -> ExitCode {
             state.event_broadcaster.clone(),
             state.acp_event_bus.clone(),
             state.db.conn.clone(),
+            state.data_dir.clone(),
             state.connection_manager.clone_ref(),
             state.emitter.clone(),
         )

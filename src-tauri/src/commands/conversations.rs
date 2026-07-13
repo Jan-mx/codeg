@@ -784,6 +784,7 @@ fn apply_in_flight_message_id(
 pub async fn get_folder_conversation_with_live_core(
     conn: &sea_orm::DatabaseConnection,
     manager: &crate::acp::manager::ConnectionManager,
+    chat_channel_manager: &crate::chat_channel::manager::ChatChannelManager,
     emitter: &EventEmitter,
     conversation_id: i32,
 ) -> Result<DbConversationDetail, AppCommandError> {
@@ -808,6 +809,9 @@ pub async fn get_folder_conversation_with_live_core(
                     Ok(true) => {
                         detail.summary.title = Some(parsed.to_string());
                         emit_conversation_upsert(emitter, conn, conversation_id).await;
+                        chat_channel_manager
+                            .sync_conversation_title(conn, conversation_id, parsed)
+                            .await;
                     }
                     Ok(false) => {}
                     Err(e) => tracing::error!(
@@ -834,11 +838,13 @@ pub async fn get_folder_conversation(
     app: tauri::AppHandle,
     db: tauri::State<'_, AppDatabase>,
     manager: tauri::State<'_, crate::acp::manager::ConnectionManager>,
+    chat_channel_manager: tauri::State<'_, crate::chat_channel::manager::ChatChannelManager>,
     conversation_id: i32,
 ) -> Result<DbConversationDetail, AppCommandError> {
     get_folder_conversation_with_live_core(
         &db.conn,
         &manager,
+        &chat_channel_manager,
         &EventEmitter::Tauri(app),
         conversation_id,
     )
@@ -1316,16 +1322,36 @@ pub async fn update_conversation_title_core(
         .map_err(AppCommandError::from)
 }
 
+/// Re-read the persisted conversation title and best-effort sync it to any
+/// bound chat-channel threads (e.g. Telegram forum topics). Lives in
+/// `commands/` so web handlers route through a `_core` helper instead of
+/// calling the db service layer directly.
+pub async fn sync_conversation_title_to_channels_core(
+    conn: &sea_orm::DatabaseConnection,
+    chat_channel_manager: &crate::chat_channel::manager::ChatChannelManager,
+    conversation_id: i32,
+) {
+    if let Ok(conv) = conversation_service::get_by_id(conn, conversation_id).await {
+        if let Some(title) = conv.title.as_deref() {
+            chat_channel_manager
+                .sync_conversation_title(conn, conversation_id, title)
+                .await;
+        }
+    }
+}
+
 #[cfg(feature = "tauri-runtime")]
 #[cfg_attr(feature = "tauri-runtime", tauri::command)]
 pub async fn update_conversation_title(
     app: tauri::AppHandle,
     db: tauri::State<'_, AppDatabase>,
+    chat_channel_manager: tauri::State<'_, crate::chat_channel::manager::ChatChannelManager>,
     conversation_id: i32,
     title: String,
 ) -> Result<(), AppCommandError> {
     update_conversation_title_core(&db.conn, conversation_id, title).await?;
     emit_conversation_upsert(&EventEmitter::Tauri(app), &db.conn, conversation_id).await;
+    sync_conversation_title_to_channels_core(&db.conn, &chat_channel_manager, conversation_id).await;
     Ok(())
 }
 

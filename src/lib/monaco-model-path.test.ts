@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest"
+import { URI } from "monaco-editor/esm/vs/base/common/uri.js"
 import { buildMonacoModelPath } from "@/lib/monaco-model-path"
 
 describe("buildMonacoModelPath", () => {
@@ -26,5 +27,12 @@ describe("buildMonacoModelPath", () => {
     expect(buildMonacoModelPath("/repo/a b#c.ts", "x")).toBe(
       "file:///repo/a%20b%23c.ts"
     )
+  })
+
+  it("is compared after Monaco normalizes Windows drive letters", () => {
+    const path = buildMonacoModelPath("D:\\repo\\notes.md", "x")
+
+    expect(path).toBe("file:///D%3A/repo/notes.md")
+    expect(URI.parse(path).toString()).toBe("file:///d%3A/repo/notes.md")
   })
 })

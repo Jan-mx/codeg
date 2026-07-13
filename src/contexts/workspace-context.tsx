@@ -172,7 +172,9 @@ interface WorkspaceActionsValue {
     unsavedContent: string
   ) => void
   updateActiveFileContent: (content: string) => void
+  updateFileTabContent: (tabId: string, content: string) => void
   saveActiveFile: (options?: { force?: boolean }) => Promise<boolean>
+  setFileTabComposing: (tabId: string, composing: boolean) => void
   reloadActiveFile: () => Promise<void>
   toggleFileTabPreview: (tabId: string) => void
   toggleFilesMaximized: () => void
@@ -394,6 +396,13 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
   // Most-recently-active tab ids, most recent first. Drives the memory
   // guardrail's least-recently-active eviction order.
   const tabRecencyRef = useRef<string[]>([])
+  const composingFileTabIdsRef = useRef<Set<string>>(new Set())
+  const deferredSaveTabsRef = useRef<Map<string, { force?: boolean }>>(
+    new Map()
+  )
+  const saveFileTabRef = useRef<
+    ((tabId: string, options?: { force?: boolean }) => Promise<boolean>) | null
+  >(null)
 
   useEffect(() => {
     fileTabsRef.current = fileTabs
@@ -1821,13 +1830,10 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
     dequeueExternalConflict()
   }, [dequeueExternalConflict])
 
-  const updateActiveFileContent = useCallback((content: string) => {
-    const activeId = activeFileTabIdRef.current
-    if (!activeId) return
-
-    setFileTabs((prev) =>
-      prev.map((tab) => {
-        if (tab.id !== activeId || tab.kind !== "file") return tab
+  const updateFileTabContent = useCallback((tabId: string, content: string) => {
+    const updateTabs = (tabs: FileWorkspaceTab[]): FileWorkspaceTab[] =>
+      tabs.map((tab) => {
+        if (tab.id !== tabId || tab.kind !== "file") return tab
         if (tab.loading || tab.readonly) return tab
         if (tab.content === content) return tab
 
@@ -1840,11 +1846,29 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
           saveError: null,
         }
       })
-    )
+
+    fileTabsRef.current = updateTabs(fileTabsRef.current)
+    setFileTabs(updateTabs)
   }, [])
+
+  const updateActiveFileContent = useCallback(
+    (content: string) => {
+      const activeId = activeFileTabIdRef.current
+      if (!activeId) return
+      updateFileTabContent(activeId, content)
+    },
+    [updateFileTabContent]
+  )
 
   const saveFileTab = useCallback(
     async (tabId: string, options?: { force?: boolean }): Promise<boolean> => {
+      if (composingFileTabIdsRef.current.has(tabId)) {
+        const deferredOptions = deferredSaveTabsRef.current.get(tabId)
+        deferredSaveTabsRef.current.set(tabId, {
+          force: Boolean(deferredOptions?.force || options?.force),
+        })
+        return false
+      }
       const tab = fileTabsRef.current.find(
         (candidate) => candidate.id === tabId
       )
@@ -1975,6 +1999,28 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
       }
     },
     [enqueueExternalConflict, recordSelfWriteEcho, t]
+  )
+
+  useEffect(() => {
+    saveFileTabRef.current = saveFileTab
+  }, [saveFileTab])
+
+  const setFileTabComposing = useCallback(
+    (tabId: string, composing: boolean) => {
+      if (composing) {
+        composingFileTabIdsRef.current.add(tabId)
+        return
+      }
+
+      composingFileTabIdsRef.current.delete(tabId)
+      const deferredOptions = deferredSaveTabsRef.current.get(tabId)
+      if (!deferredOptions) return
+      deferredSaveTabsRef.current.delete(tabId)
+      queueMicrotask(() => {
+        void saveFileTabRef.current?.(tabId, deferredOptions)
+      })
+    },
+    []
   )
 
   const saveActiveFile = useCallback(
@@ -2316,7 +2362,9 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
       openSessionFileDiff,
       openExternalConflictDiff,
       updateActiveFileContent,
+      updateFileTabContent,
       saveActiveFile,
+      setFileTabComposing,
       reloadActiveFile,
       toggleFileTabPreview,
       toggleFilesMaximized,
@@ -2342,7 +2390,9 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
       openSessionFileDiff,
       openExternalConflictDiff,
       updateActiveFileContent,
+      updateFileTabContent,
       saveActiveFile,
+      setFileTabComposing,
       reloadActiveFile,
       toggleFileTabPreview,
       toggleFilesMaximized,
