@@ -1289,10 +1289,12 @@
         "system": "系统",
         "toolResult": "结果",
         "toolError": "错误"
-      }
+      },
+      "moreActions": "更多操作"
     },
     "sessionDetails": {
       "menuLabel": "会话详情",
+      "noActiveSession": "暂无活动会话",
       "title": "会话详情",
       "subtitle": "会话元信息与 Token 用量",
       "fieldTitle": "标题",
@@ -1434,7 +1436,8 @@
       "preview": "预览",
       "editSource": "编辑源码",
       "maximize": "最大化",
-      "restore": "还原"
+      "restore": "还原",
+      "emptyDirectory": "空目录"
     },
     "terminal": {
       "rename": "重命名",

@@ -1289,10 +1289,12 @@
         "system": "系統",
         "toolResult": "結果",
         "toolError": "錯誤"
-      }
+      },
+      "moreActions": "更多操作"
     },
     "sessionDetails": {
       "menuLabel": "對話詳情",
+      "noActiveSession": "暫無使用中的對話",
       "title": "對話詳情",
       "subtitle": "對話中繼資料與 Token 用量",
       "fieldTitle": "標題",
@@ -1434,7 +1436,8 @@
       "preview": "預覽",
       "editSource": "編輯原始碼",
       "maximize": "最大化",
-      "restore": "還原"
+      "restore": "還原",
+      "emptyDirectory": "空目錄"
     },
     "terminal": {
       "rename": "重新命名",

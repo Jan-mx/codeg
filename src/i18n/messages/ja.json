@@ -1289,10 +1289,12 @@
         "system": "システム",
         "toolResult": "結果",
         "toolError": "エラー"
-      }
+      },
+      "moreActions": "その他の操作"
     },
     "sessionDetails": {
       "menuLabel": "セッション詳細",
+      "noActiveSession": "アクティブなセッションがありません",
       "title": "セッション詳細",
       "subtitle": "セッションのメタデータとトークン使用量",
       "fieldTitle": "タイトル",
@@ -1434,7 +1436,8 @@
       "preview": "プレビュー",
       "editSource": "ソースを編集",
       "maximize": "最大化",
-      "restore": "元に戻す"
+      "restore": "元に戻す",
+      "emptyDirectory": "空のフォルダー"
     },
     "terminal": {
       "rename": "名前を変更",

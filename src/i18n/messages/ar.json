@@ -1289,10 +1289,12 @@
         "system": "النظام",
         "toolResult": "النتيجة",
         "toolError": "خطأ"
-      }
+      },
+      "moreActions": "إجراءات إضافية"
     },
     "sessionDetails": {
       "menuLabel": "تفاصيل الجلسة",
+      "noActiveSession": "لا توجد جلسة نشطة",
       "title": "تفاصيل الجلسة",
       "subtitle": "بيانات الجلسة الوصفية واستخدام الرموز",
       "fieldTitle": "العنوان",
@@ -1434,7 +1436,8 @@
       "preview": "معاينة",
       "editSource": "تحرير المصدر",
       "maximize": "تكبير",
-      "restore": "استعادة"
+      "restore": "استعادة",
+      "emptyDirectory": "مجلد فارغ"
     },
     "terminal": {
       "rename": "إعادة تسمية",

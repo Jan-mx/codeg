@@ -76,6 +76,7 @@ import {
   AGENT_LABELS,
   type AgentType,
   type ContentBlock,
+  type ConversationStatus,
   type EventEnvelope,
   type MessageTurn,
   type PromptDraft,
@@ -107,9 +108,11 @@ import {
   exportAsImage,
   exportAsMarkdown,
   ExportTooLongError,
-  type ExportLabels,
 } from "@/lib/export-conversation"
+import { useExportLabels } from "@/lib/use-export-labels"
+import { useIsMobile } from "@/hooks/use-mobile"
 import { resolveActiveSessionDetails } from "./active-session-details"
+import { ConversationDetailHeader } from "./conversation-detail-header"
 import { SessionDetailsDialog } from "./session-details-dialog"
 
 interface ConversationTabViewProps {
@@ -1594,8 +1597,6 @@ const ConversationTabView = memo(function ConversationTabView({
 
 export function ConversationDetailPanel() {
   const t = useTranslations("Folder.conversation")
-  const tStatus = useTranslations("Folder.statusLabels")
-  const tExport = useTranslations("Folder.conversation.exportLabels")
   const tDetails = useTranslations("Folder.sessionDetails")
   const {
     completeTurn: runtimeCompleteTurn,
@@ -1607,6 +1608,9 @@ export function ConversationDetailPanel() {
   const tabs = useTabStore((s) => s.tabs)
   const activeTabId = useTabStore((s) => s.activeTabId)
   const isTileMode = useTabStore((s) => s.isTileMode)
+  // The per-tile conversation header is desktop-only; the mobile shell keeps its
+  // own tab bar + menu, so the tile renders the view alone there.
+  const isMobile = useIsMobile()
   const { openNewConversationTab, closeTab, switchTab, onPreviewTabReplaced } =
     useTabActions()
   const newConversation = useMemo(() => {
@@ -1621,34 +1625,7 @@ export function ConversationDetailPanel() {
   const [reloadByTabId, setReloadByTabId] = useState<Record<string, number>>({})
   const [detailsOpen, setDetailsOpen] = useState(false)
 
-  const exportLabels = useMemo<ExportLabels>(
-    () => ({
-      untitledConversation: tExport("untitledConversation"),
-      agent: tExport("agent"),
-      model: tExport("model"),
-      status: tExport("status"),
-      started: tExport("started"),
-      updated: tExport("updated"),
-      tokens: tExport("tokens"),
-      duration: tExport("duration"),
-      inputTokens: tExport("inputTokens"),
-      outputTokens: tExport("outputTokens"),
-      cacheRead: tExport("cacheRead"),
-      cacheWrite: tExport("cacheWrite"),
-      user: tExport("user"),
-      assistant: tExport("assistant"),
-      system: tExport("system"),
-      toolResult: tExport("toolResult"),
-      toolError: tExport("toolError"),
-      statusLabels: {
-        in_progress: tStatus("in_progress"),
-        pending_review: tStatus("pending_review"),
-        completed: tStatus("completed"),
-        cancelled: tStatus("cancelled"),
-      },
-    }),
-    [tExport, tStatus]
-  )
+  const exportLabels = useExportLabels()
 
   // Disconnect the old connection immediately when a preview tab is replaced
   useEffect(() => {
@@ -1942,6 +1919,18 @@ export function ConversationDetailPanel() {
 
   const tabElements = tabs.map((tab, index) => {
     const active = tab.id === activeTabId
+    const folderPath = allFolders.find((f) => f.id === tab.folderId)?.path
+    const view = (
+      <ConversationTabView
+        tabId={tab.id}
+        conversationId={tab.conversationId}
+        agentType={tab.agentType}
+        workingDir={tab.workingDir ?? folderPath}
+        isActive={active}
+        showActiveFlow={canTile && active}
+        reloadSignal={reloadByTabId[tab.id] ?? 0}
+      />
+    )
     return (
       <div
         key={tab.id}
@@ -1956,7 +1945,7 @@ export function ConversationDetailPanel() {
           canTile
             ? cn(
                 "relative h-full min-w-[24rem] flex-1 overflow-hidden",
-                index > 0 && "border-l border-border"
+                index > 0 && "border-l border-border/50"
               )
             : active
               ? "h-full"
@@ -1972,107 +1961,118 @@ export function ConversationDetailPanel() {
         {canTile && active && (
           <span className="sr-only">{t("activeConversationIndicator")}</span>
         )}
-        <ConversationTabView
-          tabId={tab.id}
-          conversationId={tab.conversationId}
-          agentType={tab.agentType}
-          workingDir={
-            tab.workingDir ??
-            allFolders.find((f) => f.id === tab.folderId)?.path
-          }
-          isActive={active}
-          showActiveFlow={canTile && active}
-          reloadSignal={reloadByTabId[tab.id] ?? 0}
-        />
+        {view}
       </div>
     )
   })
 
+  // A single header (desktop only) sits fixed above the horizontally-scrolling
+  // tile row, so it never scrolls on the x-axis when conversations are tiled.
+  // It reflects the ACTIVE conversation (title + owning folder).
+  const activeTab = tabs.find((tab) => tab.id === activeTabId) ?? null
+  const activeTabFolder = activeTab
+    ? allFolders.find((f) => f.id === activeTab.folderId)
+    : undefined
+
   return (
     <>
-      <ContextMenu onOpenChange={handleContextMenuOpenChange}>
-        <ContextMenuTrigger asChild>
-          <div
-            className="relative h-full min-h-0 overflow-hidden"
-            onPointerDown={handleContextMenuTriggerPointerDown}
-          >
-            {/* Stable wrapper across canTile flip — otherwise sibling tabs remount and a live streaming response is torn down. */}
-            <ScrollArea
-              x={canTile ? "scroll" : "hidden"}
-              y="hidden"
-              className="h-full w-full"
+      <div className="flex h-full min-h-0 flex-col overflow-hidden">
+        {!isMobile && activeTab && (
+          <ConversationDetailHeader
+            tabId={activeTab.id}
+            conversationId={activeTab.conversationId}
+            runtimeConversationId={activeTab.runtimeConversationId ?? null}
+            folderId={activeTab.folderId}
+            folderPath={activeTabFolder?.path}
+            folderName={activeTabFolder?.name ?? null}
+            title={activeTab.title}
+            status={activeTab.status as ConversationStatus | undefined}
+          />
+        )}
+        <ContextMenu onOpenChange={handleContextMenuOpenChange}>
+          <ContextMenuTrigger asChild>
+            <div
+              className="relative min-h-0 flex-1 overflow-hidden"
+              onPointerDown={handleContextMenuTriggerPointerDown}
             >
-              <div
-                className={cn(
-                  "relative h-full",
-                  canTile && "flex min-w-full flex-row"
-                )}
+              {/* Stable wrapper across canTile flip — otherwise sibling tabs remount and a live streaming response is torn down. */}
+              <ScrollArea
+                x={canTile ? "scroll" : "hidden"}
+                y="hidden"
+                className="h-full w-full"
               >
-                {tabElements}
-              </div>
-            </ScrollArea>
-          </div>
-        </ContextMenuTrigger>
-        <ContextMenuContent>
-          <ContextMenuItem
-            disabled={!contextMenuSelectedText}
-            onSelect={handleCopySelectedText}
-          >
-            <Copy className="h-4 w-4" />
-            {t("copyText")}
-          </ContextMenuItem>
-          <ContextMenuSeparator />
-          <ContextMenuItem
-            disabled={!folder?.path}
-            onSelect={handleNewConversation}
-          >
-            <SquarePen className="h-4 w-4" />
-            {t("newConversation")}
-          </ContextMenuItem>
-          <ContextMenuSub>
-            <ContextMenuSubTrigger disabled={!canExport}>
-              <Download className="h-4 w-4" />
-              {t("exportConversation")}
-            </ContextMenuSubTrigger>
-            <ContextMenuSubContent>
-              <ContextMenuItem onSelect={handleExportImage}>
-                <FileImage className="h-4 w-4" />
-                {t("exportImage")}
-              </ContextMenuItem>
-              <ContextMenuItem onSelect={handleExportMarkdown}>
-                <FileText className="h-4 w-4" />
-                {t("exportMarkdown")}
-              </ContextMenuItem>
-              <ContextMenuItem onSelect={handleExportHtml}>
-                <FileCode className="h-4 w-4" />
-                {t("exportHtml")}
-              </ContextMenuItem>
-            </ContextMenuSubContent>
-          </ContextMenuSub>
-          <ContextMenuItem
-            disabled={!canReloadActiveConversation}
-            onSelect={handleReloadActiveConversation}
-          >
-            <RefreshCw className="h-4 w-4" />
-            {t("reload")}
-          </ContextMenuItem>
-          <ContextMenuItem
-            disabled={!activeSessionSummary}
-            onSelect={() => setDetailsOpen(true)}
-          >
-            <Info className="h-4 w-4" />
-            {tDetails("menuLabel")}
-          </ContextMenuItem>
-          <ContextMenuSeparator />
-          <ContextMenuItem
-            disabled={!activeTabId}
-            onSelect={handleCloseActiveTab}
-          >
-            <X className="h-4 w-4" />
-            {t("closeConversation")}
-          </ContextMenuItem>
-        </ContextMenuContent>
-      </ContextMenu>
+                <div
+                  className={cn(
+                    "relative h-full",
+                    canTile && "flex min-w-full flex-row"
+                  )}
+                >
+                  {tabElements}
+                </div>
+              </ScrollArea>
+            </div>
+          </ContextMenuTrigger>
+          <ContextMenuContent>
+            <ContextMenuItem
+              disabled={!contextMenuSelectedText}
+              onSelect={handleCopySelectedText}
+            >
+              <Copy className="h-4 w-4" />
+              {t("copyText")}
+            </ContextMenuItem>
+            <ContextMenuSeparator />
+            <ContextMenuItem
+              disabled={!folder?.path}
+              onSelect={handleNewConversation}
+            >
+              <SquarePen className="h-4 w-4" />
+              {t("newConversation")}
+            </ContextMenuItem>
+            <ContextMenuSub>
+              <ContextMenuSubTrigger disabled={!canExport}>
+                <Download className="h-4 w-4" />
+                {t("exportConversation")}
+              </ContextMenuSubTrigger>
+              <ContextMenuSubContent>
+                <ContextMenuItem onSelect={handleExportImage}>
+                  <FileImage className="h-4 w-4" />
+                  {t("exportImage")}
+                </ContextMenuItem>
+                <ContextMenuItem onSelect={handleExportMarkdown}>
+                  <FileText className="h-4 w-4" />
+                  {t("exportMarkdown")}
+                </ContextMenuItem>
+                <ContextMenuItem onSelect={handleExportHtml}>
+                  <FileCode className="h-4 w-4" />
+                  {t("exportHtml")}
+                </ContextMenuItem>
+              </ContextMenuSubContent>
+            </ContextMenuSub>
+            <ContextMenuItem
+              disabled={!canReloadActiveConversation}
+              onSelect={handleReloadActiveConversation}
+            >
+              <RefreshCw className="h-4 w-4" />
+              {t("reload")}
+            </ContextMenuItem>
+            <ContextMenuItem
+              disabled={!activeSessionSummary}
+              onSelect={() => setDetailsOpen(true)}
+            >
+              <Info className="h-4 w-4" />
+              {tDetails("menuLabel")}
+            </ContextMenuItem>
+            <ContextMenuSeparator />
+            <ContextMenuItem
+              disabled={!activeTabId}
+              onSelect={handleCloseActiveTab}
+            >
+              <X className="h-4 w-4" />
+              {t("closeConversation")}
+            </ContextMenuItem>
+          </ContextMenuContent>
+        </ContextMenu>
+      </div>
       {activeSessionSummary && (
         <SessionDetailsDialog
           open={detailsOpen}

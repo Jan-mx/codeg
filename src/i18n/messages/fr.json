@@ -1289,10 +1289,12 @@
         "system": "Système",
         "toolResult": "Résultat",
         "toolError": "Erreur"
-      }
+      },
+      "moreActions": "Plus d’actions"
     },
     "sessionDetails": {
       "menuLabel": "Détails de la session",
+      "noActiveSession": "Aucune session active",
       "title": "Détails de la session",
       "subtitle": "Métadonnées de la session et utilisation des tokens",
       "fieldTitle": "Titre",
@@ -1434,7 +1436,8 @@
       "preview": "Aperçu",
       "editSource": "Modifier la source",
       "maximize": "Agrandir",
-      "restore": "Restaurer"
+      "restore": "Restaurer",
+      "emptyDirectory": "Dossier vide"
     },
     "terminal": {
       "rename": "Renommer",

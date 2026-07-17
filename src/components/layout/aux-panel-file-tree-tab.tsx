@@ -2,6 +2,7 @@
 
 import {
   useCallback,
+  useDeferredValue,
   useEffect,
   useMemo,
   useRef,
@@ -877,7 +878,23 @@ export function FileTreeTab() {
   const t = useTranslations("Folder.fileTreeTab")
   const tCommon = useTranslations("Folder.common")
   const { pendingRevealPath, consumePendingRevealPath } = useAuxPanelContext()
-  const { activeFolder: folder } = useActiveFolder()
+  // Defer the folder so a cross-folder conversation-tab switch commits first and
+  // this tab's heavy tree rebuild (remount, applyLazyTreeOverrides, per-row
+  // ContextMenus) runs in a non-blocking transition a frame later instead of
+  // janking the switch. All path-keyed work (store subscription, <FileTree key>,
+  // fetch effects) rides the deferred folder; same-path metadata churn is a
+  // no-op since the tree derives from the store snapshot, not folder identity.
+  const { activeFolder } = useActiveFolder()
+  const folder = useDeferredValue(activeFolder)
+  // True while the deferred render lags a cross-folder switch. During that gap we
+  // render the loading skeleton (below) instead of the PREVIOUS folder's tree:
+  // besides keeping the heavy rebuild off the switch commit, unmounting those
+  // rows closes any open row ContextMenu (which portals outside this subtree) so
+  // a click can't route an opener to the NEW active folder (openers default to it
+  // when folderId is omitted — see resolveTargetFolder) and open/diff a
+  // same-named file under the wrong folder. Also gates the reveal effect below.
+  // Clears the instant the deferred render catches up.
+  const folderStale = activeFolder?.id !== folder?.id
   const tabs = useTabStore((s) => s.tabs)
   const activeTabId = useTabStore((s) => s.activeTabId)
   const { createTerminalInDirectory } = useTerminalContext()
@@ -961,6 +978,10 @@ export function FileTreeTab() {
     Set<string>
   >(new Set())
   const filePathSetRef = useRef<Set<string>>(new Set())
+  // Request generation for async dialog loaders: bumped on every folder switch so
+  // a folder-A `gitStatus` / branch fetch still in flight can't write into (or
+  // close) a dialog the user has since reopened under folder B.
+  const loadGenRef = useRef(0)
   const previousExpandedPathsRef = useRef<Set<string>>(
     new Set([FILE_TREE_ROOT_PATH])
   )
@@ -985,7 +1006,10 @@ export function FileTreeTab() {
   // Handle pending reveal path: expand all ancestor directories once tree is loaded
   const hasNodes = nodes.length > 0
   useEffect(() => {
-    if (!pendingRevealPath || !hasNodes) return
+    // Skip while the deferred tree still lags the active folder — consuming the
+    // reveal now would expand it against the PREVIOUS folder's tree (a no-op that
+    // drops the request). Re-runs once folderStale clears on the settled tree.
+    if (!pendingRevealPath || !hasNodes || folderStale) return
     consumePendingRevealPath()
     setExpandedPaths((prev) => {
       const next = new Set(prev)
@@ -998,7 +1022,7 @@ export function FileTreeTab() {
       next.add(pendingRevealPath)
       return next
     })
-  }, [pendingRevealPath, consumePendingRevealPath, hasNodes])
+  }, [pendingRevealPath, consumePendingRevealPath, hasNodes, folderStale])
 
   const activeSessionTabId = useMemo(() => {
     const activeTab = tabs.find((tab) => tab.id === activeTabId)
@@ -1523,9 +1547,30 @@ export function FileTreeTab() {
     setDirectoryGitSubmitting(false)
   }, [])
 
+  // Close in-panel dialogs the instant the ACTIVE folder changes (keyed on the
+  // live id, not the deferred `folder`) so a dialog opened under the previous
+  // folder can't act (rename / create / delete / rollback / compare / batch)
+  // against the new one after the deferred render settles and it re-mounts.
+  useEffect(() => {
+    loadGenRef.current++
+    setRenameTarget(null)
+    setCreateParentPath(null)
+    setDeleteTarget(null)
+    setRollbackTarget(null)
+    setCompareTarget(null)
+    // Also drop the loaded branch list so a compare dialog reopened under the
+    // new folder starts empty (loading) rather than briefly showing — and
+    // letting the user act on — the previous folder's branches.
+    setCompareBranchList({ local: [], remote: [], worktree_branches: [] })
+    setCompareCurrentBranch(null)
+    setCompareBranchLoading(false)
+    resetDirectoryGitActionDialog()
+  }, [activeFolder?.id, resetDirectoryGitActionDialog])
+
   const openDirectoryGitActionDialog = useCallback(
     async (action: DirectoryGitAction, target: FileActionTarget) => {
       if (!folder?.path) return
+      const gen = loadGenRef.current
       setDirectoryGitActionType(action)
       setDirectoryGitActionTarget(target)
       setDirectoryGitCandidates([])
@@ -1536,6 +1581,10 @@ export function FileTreeTab() {
 
       try {
         const statusEntries = await gitStatus(folder.path)
+        // Bail if the folder switched while this request was in flight — writing
+        // now would clobber (or, on an empty result, close) a dialog reopened
+        // under the new folder.
+        if (gen !== loadGenRef.current) return
         const scopedEntries = scopeGitStatusEntriesForDirectory(
           statusEntries,
           target.path
@@ -1561,10 +1610,14 @@ export function FileTreeTab() {
         )
         setDirectoryGitExpandedPaths(expanded)
       } catch (error) {
+        // Same generation guard on the error path: a stale folder-A rejection
+        // must not write its error into (nor toggle the loading of) a dialog
+        // reopened under folder B.
+        if (gen !== loadGenRef.current) return
         const message = toErrorMessage(error)
         setDirectoryGitError(message)
       } finally {
-        setDirectoryGitLoading(false)
+        if (gen === loadGenRef.current) setDirectoryGitLoading(false)
       }
     },
     [folder?.path, resetDirectoryGitActionDialog, t]
@@ -1606,12 +1659,17 @@ export function FileTreeTab() {
       setCompareCurrentBranch(null)
       return
     }
+    const gen = loadGenRef.current
     setCompareBranchLoading(true)
     try {
       const [branchesResult, currentBranchResult] = await Promise.allSettled([
         gitListAllBranches(folder.path),
         getGitBranch(folder.path),
       ])
+      // Bail if the folder switched mid-flight — writing folder-A branches into a
+      // compare dialog reopened under folder B would let the user diff against the
+      // wrong repo's branch.
+      if (gen !== loadGenRef.current) return
 
       if (branchesResult.status === "fulfilled") {
         setCompareBranchList(branchesResult.value)
@@ -1630,12 +1688,16 @@ export function FileTreeTab() {
         setCompareCurrentBranch(null)
       }
     } catch (error) {
+      // Same generation guard on the error path: a stale folder-A failure must
+      // not clobber (nor toggle the loading of) a compare dialog reopened under
+      // folder B.
+      if (gen !== loadGenRef.current) return
       setCompareBranchList({ local: [], remote: [], worktree_branches: [] })
       setCompareCurrentBranch(null)
       const message = toErrorMessage(error)
       toast.error(t("toasts.loadBranchesFailed"), { description: message })
     } finally {
-      setCompareBranchLoading(false)
+      if (gen === loadGenRef.current) setCompareBranchLoading(false)
     }
   }, [folder?.path, t])
 
@@ -2060,7 +2122,10 @@ export function FileTreeTab() {
     return <AuxPanelNoFolderEmpty />
   }
 
-  if (loading && nodes.length === 0) {
+  // `folderStale` forces the skeleton over the previous folder's tree while the
+  // deferred render catches up to the switch (its nodes are still loaded, so the
+  // `nodes.length === 0` guard alone wouldn't — see the declaration above).
+  if (folderStale || (loading && nodes.length === 0)) {
     return (
       <div className="p-3 space-y-2">
         <Skeleton className="h-4 w-3/4" />

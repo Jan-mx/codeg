@@ -1289,10 +1289,12 @@
         "system": "System",
         "toolResult": "Ergebnis",
         "toolError": "Fehler"
-      }
+      },
+      "moreActions": "Weitere Aktionen"
     },
     "sessionDetails": {
       "menuLabel": "Sitzungsdetails",
+      "noActiveSession": "Keine aktive Sitzung",
       "title": "Sitzungsdetails",
       "subtitle": "Sitzungsmetadaten und Token-Nutzung",
       "fieldTitle": "Titel",
@@ -1434,7 +1436,8 @@
       "preview": "Vorschau",
       "editSource": "Quelle bearbeiten",
       "maximize": "Maximieren",
-      "restore": "Wiederherstellen"
+      "restore": "Wiederherstellen",
+      "emptyDirectory": "Leerer Ordner"
     },
     "terminal": {
       "rename": "Umbenennen",

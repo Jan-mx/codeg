@@ -1715,3 +1715,103 @@
   outline: 2px solid var(--ring);
   outline-offset: 1px;
 }
+
+/* Browser-style tab separators (embedded desktop title-bar tab strips).
+   Each tab draws a hairline on its LEFT edge; the line is suppressed for the
+   first tab and around any active / hovered tab (Chrome behavior) using only
+   adjacent-sibling selectors — no :has(), so it is robust across webviews. */
+.browser-tab-item {
+  position: relative;
+}
+.browser-tab-item::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  /* The item stretches from below the group's `pt-1.5` gap to the strip bottom,
+     so its geometric center sits 3px below the h-10 strip's midline. Nudge the
+     hairline up 3px so it centers on the strip midline — matching the tab
+     content (dot/title/close), which is raised by the inner row's `pb-1.5`. */
+  top: calc(50% - 3px);
+  height: 1rem;
+  width: 1px;
+  transform: translateY(-50%);
+  background: var(--border);
+  opacity: 1;
+  transition: opacity 150ms ease;
+  pointer-events: none;
+}
+.browser-tab-item:first-child::before,
+.browser-tab-item[data-active="true"]::before,
+.browser-tab-item:hover::before,
+.browser-tab-item[data-active="true"] + .browser-tab-item::before,
+.browser-tab-item:hover + .browser-tab-item::before {
+  opacity: 0;
+}
+
+/* Tab bottom "seat": the two bottom corners flare outward with a concave
+   (reverse) curve — the browser-tab look — so a tab blends down into the strip /
+   detail header. A dedicated span hosts these because the tab's own surface is
+   `overflow-hidden` (it would clip the outboard flares) and its ::before is
+   already the separator hairline. It is rendered for every embedded tab but
+   stays invisible (opacity 0) until the tab is active OR hovered — so hovering
+   a tab reveals the same reverse corners. The fill matches the tab surface:
+   solid `var(--background)` for the active tab, and the translucent hover shade
+   (`bg-background/60`) for a hovered non-active tab, so the concave never pops
+   as solid white. The radial-gradient mask carves the concave quarter (no color
+   seam). Since the item has no horizontal padding, the seat spans the surface
+   flush (`left/right: 0`) and each flare reaches 0.5rem outward; that fits
+   exactly within the group's `px-2` padding, so `overflow-hidden` never clips
+   the first/last tab's flare. The active tab is elevated (`z-10` on the item),
+   so a hovered neighbour's flare can never paint over the active tab's corner. */
+.browser-tab-seat {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 0.5rem;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 150ms ease;
+}
+@media (prefers-reduced-motion: reduce) {
+  .browser-tab-seat {
+    transition: none;
+  }
+}
+.browser-tab-item[data-active="true"] .browser-tab-seat,
+.browser-tab-item:hover .browser-tab-seat {
+  opacity: 1;
+}
+.browser-tab-seat::before,
+.browser-tab-seat::after {
+  content: "";
+  position: absolute;
+  bottom: 0;
+  height: 0.5rem;
+  width: 0.5rem;
+  background-color: var(--background);
+}
+/* Hovered (non-active) tab: match its translucent hover fill so the concave
+   corner blends with the hover surface instead of popping solid white. */
+.browser-tab-item:not([data-active="true"]):hover .browser-tab-seat::before,
+.browser-tab-item:not([data-active="true"]):hover .browser-tab-seat::after {
+  background-color: color-mix(in oklab, var(--background) 60%, transparent);
+}
+.browser-tab-seat::before {
+  left: -0.5rem;
+  -webkit-mask-image: radial-gradient(
+    circle at top left,
+    transparent 7px,
+    #000 8px
+  );
+  mask-image: radial-gradient(circle at top left, transparent 7px, #000 8px);
+}
+.browser-tab-seat::after {
+  right: -0.5rem;
+  -webkit-mask-image: radial-gradient(
+    circle at top right,
+    transparent 7px,
+    #000 8px
+  );
+  mask-image: radial-gradient(circle at top right, transparent 7px, #000 8px);
+}

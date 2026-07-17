@@ -1289,10 +1289,12 @@
         "system": "System",
         "toolResult": "Result",
         "toolError": "Error"
-      }
+      },
+      "moreActions": "More actions"
     },
     "sessionDetails": {
       "menuLabel": "Session Details",
+      "noActiveSession": "No active session",
       "title": "Session Details",
       "subtitle": "Session metadata and token usage",
       "fieldTitle": "Title",
@@ -1434,7 +1436,8 @@
       "preview": "Preview",
       "editSource": "Edit Source",
       "maximize": "Maximize",
-      "restore": "Restore"
+      "restore": "Restore",
+      "emptyDirectory": "Empty folder"
     },
     "terminal": {
       "rename": "Rename",
