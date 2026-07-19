@@ -309,11 +309,18 @@ export function AuxPanel() {
           // TabsContent's aria-labelledby still resolves the panel's name from
           // the directly-referenced hidden trigger, so it stays labelled without
           // showing a pointless single-tab control.
-          <div className="flex h-10 shrink-0 items-center gap-2 ws-surface-muted pl-3 pr-2">
-            {/* `bg-muted` matches the conversation/file strips + bottom
-                StatusBar. The segmented track then needs a recessed groove
+          <div className="flex h-10 shrink-0 items-center gap-2 bg-muted ws-transparent-bg ws-strip-line pl-3 pr-2">
+            {/* Off-image `bg-muted` matches the conversation/file strips +
+                bottom StatusBar. With a workspace background image on, the
+                composition-family pair `ws-transparent-bg ws-strip-line` makes
+                this top strip go transparent (revealing the real background
+                like the column body / conversation + file tab strips do,
+                instead of the old frosted `ws-surface-muted`) and draws a
+                hairline bottom border to separate it from the tab content —
+                both are `[data-workspace-bg="on"]`-gated, so off-image is
+                unchanged. The segmented track then needs a recessed groove
                 (`bg-foreground/[0.06]`) instead of the old `bg-muted/60`, which
-                would vanish against the now-muted strip; the active trigger
+                would vanish against the muted strip; the active trigger
                 (bg-background) still reads as a raised white pill. */}
             {collapsed && renderCollapsedPicker()}
             {/* When collapsed we keep the TabsList mounted but `hidden`
