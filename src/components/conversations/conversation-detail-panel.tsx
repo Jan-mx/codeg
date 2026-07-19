@@ -44,7 +44,7 @@ import { ChatInput } from "@/components/chat/chat-input"
 import { WelcomeHero, WelcomeTip } from "@/components/chat/welcome-hero"
 import { QuickActions } from "@/components/chat/quick-actions"
 import type { ComposerInjectContent } from "@/components/chat/message-input"
-import { ScrollArea } from "@/components/ui/scroll-area"
+import { TileScrollContainer } from "@/components/conversations/tile-scroll-container"
 import {
   acpFork,
   createChatConversation,
@@ -1997,11 +1997,7 @@ export function ConversationDetailPanel() {
               onPointerDown={handleContextMenuTriggerPointerDown}
             >
               {/* Stable wrapper across canTile flip — otherwise sibling tabs remount and a live streaming response is torn down. */}
-              <ScrollArea
-                x={canTile ? "scroll" : "hidden"}
-                y="hidden"
-                className="h-full w-full"
-              >
+              <TileScrollContainer canTile={canTile}>
                 <div
                   className={cn(
                     "relative h-full",
@@ -2010,7 +2006,7 @@ export function ConversationDetailPanel() {
                 >
                   {tabElements}
                 </div>
-              </ScrollArea>
+              </TileScrollContainer>
             </div>
           </ContextMenuTrigger>
           <ContextMenuContent>
