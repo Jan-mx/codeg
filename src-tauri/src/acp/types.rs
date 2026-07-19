@@ -400,8 +400,11 @@ pub enum ConfigStaleKind {
 /// A block of the user's submitted prompt, broadcast via [`AcpEvent::UserMessage`]
 /// and stored in the live snapshot. Intentionally narrower than
 /// [`PromptInputBlock`]: only what a viewer needs to render the user turn.
-/// `Resource` / `ResourceLink` prompt blocks are folded into `Text` markdown
-/// links by [`user_blocks_from_prompt`].
+/// Non-image `Resource` / `ResourceLink` prompt blocks are folded into `Text`
+/// markdown links by [`user_blocks_from_prompt`]; an image-mime embedded
+/// `Resource` (how an `image:false` / `embedded_context:true` agent like Grok
+/// carries a pasted image) is promoted to `Image` so the viewer renders a
+/// thumbnail, not a link.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum UserMessageBlock {
@@ -410,9 +413,11 @@ pub enum UserMessageBlock {
 }
 
 /// Project the wire `PromptInputBlock`s the sender submitted into the lean
-/// [`UserMessageBlock`]s broadcast to viewers: text and images pass through;
-/// resources/resource-links collapse to a `[label](uri)` markdown line so a
-/// viewer still sees what was attached without shipping blob bytes twice.
+/// [`UserMessageBlock`]s broadcast to viewers: text and images pass through; an
+/// image-mime embedded resource (Grok's pasted-image encoding) is promoted to an
+/// `Image`; other resources/resource-links collapse to a `[label](uri)` markdown
+/// line so a viewer still sees what was attached without shipping blob bytes
+/// twice.
 pub fn user_blocks_from_prompt(blocks: &[PromptInputBlock]) -> Vec<UserMessageBlock> {
     blocks
         .iter()
@@ -424,8 +429,23 @@ pub fn user_blocks_from_prompt(blocks: &[PromptInputBlock]) -> Vec<UserMessageBl
                 data: data.clone(),
                 mime_type: mime_type.clone(),
             },
-            PromptInputBlock::Resource { uri, .. } => UserMessageBlock::Text {
-                text: format!("[{uri}]({uri})"),
+            // An image-mime embedded resource carries a pasted image for agents
+            // that reject native image blocks (Grok: `image:false` +
+            // `embedded_context:true`). Promote it to `Image` so viewers render
+            // the thumbnail; non-image resources still collapse to a link.
+            PromptInputBlock::Resource {
+                uri,
+                mime_type,
+                blob,
+                ..
+            } => match (mime_type, blob) {
+                (Some(mt), Some(b)) if mt.starts_with("image/") => UserMessageBlock::Image {
+                    data: b.clone(),
+                    mime_type: mt.clone(),
+                },
+                _ => UserMessageBlock::Text {
+                    text: format!("[{uri}]({uri})"),
+                },
             },
             PromptInputBlock::ResourceLink { uri, name, .. } => UserMessageBlock::Text {
                 text: format!("[{name}]({uri})"),
@@ -825,5 +845,49 @@ mod envelope_tests {
             }
             other => panic!("expected ConversationStatusChanged, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn user_blocks_promote_image_resource_and_fold_other_resources() {
+        let blocks = vec![
+            PromptInputBlock::Text { text: "hi".into() },
+            // Grok's pasted image: an embedded resource with an image mime + blob.
+            PromptInputBlock::Resource {
+                uri: "clipboard://image.png-abc".into(),
+                mime_type: Some("image/png".into()),
+                text: None,
+                blob: Some("QUJD".into()),
+            },
+            // A non-image embedded resource still folds to a link.
+            PromptInputBlock::Resource {
+                uri: "clipboard://notes.txt".into(),
+                mime_type: Some("text/plain".into()),
+                text: Some("note".into()),
+                blob: None,
+            },
+            PromptInputBlock::ResourceLink {
+                uri: "file:///a/app.ts".into(),
+                name: "app.ts".into(),
+                mime_type: None,
+                description: None,
+            },
+        ];
+        let out = user_blocks_from_prompt(&blocks);
+        assert_eq!(
+            out,
+            vec![
+                UserMessageBlock::Text { text: "hi".into() },
+                UserMessageBlock::Image {
+                    data: "QUJD".into(),
+                    mime_type: "image/png".into(),
+                },
+                UserMessageBlock::Text {
+                    text: "[clipboard://notes.txt](clipboard://notes.txt)".into(),
+                },
+                UserMessageBlock::Text {
+                    text: "[app.ts](file:///a/app.ts)".into(),
+                },
+            ]
+        );
     }
 }

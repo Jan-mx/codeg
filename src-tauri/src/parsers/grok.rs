@@ -351,6 +351,11 @@ fn parse_updates(path: &Path) -> ParsedUpdates {
     // Stats for the in-flight turn (tokens/timing/model), applied to the
     // assistant turn when it is finalized. Reset at each turn boundary.
     let mut turn_meta = GrokTurnMeta::default();
+    // `promptIndex` of the currently-open user turn. Grok splits one prompt into
+    // several `user_message_chunk`s (prose, image, …) sharing a `promptIndex`;
+    // this lets consecutive same-prompt chunks merge into a single user turn
+    // instead of each opening a new (often empty) one.
+    let mut open_user_prompt_index: Option<i64> = None;
 
     for line in BufReader::new(file).lines() {
         let Ok(line) = line else { continue };
@@ -383,11 +388,27 @@ fn parse_updates(path: &Path) -> ParsedUpdates {
 
         // Grok's per-turn stats live in the OUTER `params._meta` (token total +
         // timing) plus `update._meta.modelId`. Accumulate them into `turn_meta`
-        // and apply at the turn boundary. A `user_message_chunk` opens a new
-        // turn, so close+reset the prior turn's accumulator before observing it.
+        // and apply at the turn boundary. A `user_message_chunk` that opens a NEW
+        // prompt closes+resets the prior turn's accumulator; a continuation chunk
+        // of the SAME prompt (see below) keeps accumulating.
         let params_meta = v.pointer("/params/_meta");
         let update_meta = update.get("_meta");
-        if kind == "user_message_chunk" {
+        // Grok emits each content piece of one prompt (prose, image, …) as its
+        // own `user_message_chunk` sharing a `promptIndex`. Merge consecutive
+        // user chunks of the same prompt into ONE user turn so a "text + image"
+        // prompt renders as a single bubble (matching the live path) rather than
+        // a trailing empty/image-only turn. A chunk continues the open user turn
+        // when no assistant content has intervened and the `promptIndex` matches
+        // (or is absent on either side).
+        let user_chunk_continues = kind == "user_message_chunk"
+            && assistant.is_none()
+            && matches!(out.turns.last(), Some(t) if matches!(t.role, TurnRole::User))
+            && update
+                .pointer("/_meta/promptIndex")
+                .and_then(Value::as_i64)
+                .zip(open_user_prompt_index)
+                .is_none_or(|(a, b)| a == b);
+        if kind == "user_message_chunk" && !user_chunk_continues {
             if let Some(prev) = assistant.as_mut() {
                 turn_meta.apply(prev);
             }
@@ -398,10 +419,14 @@ fn parse_updates(path: &Path) -> ParsedUpdates {
 
         match kind {
             "user_message_chunk" => {
-                let text = update_text(update);
+                let block = user_chunk_to_block(update);
                 out.content_events += 1;
-                if out.first_user_text.is_none() && !text.trim().is_empty() {
-                    out.first_user_text = Some(text.clone());
+                // Title/first-prompt text comes only from prose chunks; an image
+                // chunk carries no text and must not overwrite it.
+                if let Some(ContentBlock::Text { text }) = &block {
+                    if out.first_user_text.is_none() && !text.trim().is_empty() {
+                        out.first_user_text = Some(text.clone());
+                    }
                 }
                 if out.model.is_none() {
                     out.model = update
@@ -409,16 +434,26 @@ fn parse_updates(path: &Path) -> ParsedUpdates {
                         .and_then(Value::as_str)
                         .map(str::to_string);
                 }
-                out.turns.push(MessageTurn {
-                    id: String::new(), // assigned in a final pass
-                    role: TurnRole::User,
-                    blocks: vec![ContentBlock::Text { text }],
-                    timestamp: now,
-                    usage: None,
-                    duration_ms: None,
-                    model: None,
-                    completed_at: None,
-                });
+                if user_chunk_continues {
+                    // Same prompt: append the block to the open user turn.
+                    if let (Some(b), Some(turn)) = (block, out.turns.last_mut()) {
+                        turn.blocks.push(b);
+                    }
+                } else {
+                    open_user_prompt_index = update
+                        .pointer("/_meta/promptIndex")
+                        .and_then(Value::as_i64);
+                    out.turns.push(MessageTurn {
+                        id: String::new(), // assigned in a final pass
+                        role: TurnRole::User,
+                        blocks: block.into_iter().collect(),
+                        timestamp: now,
+                        usage: None,
+                        duration_ms: None,
+                        model: None,
+                        completed_at: None,
+                    });
+                }
             }
             "agent_message_chunk" => {
                 out.content_events += 1;
@@ -539,6 +574,67 @@ fn update_text(update: &Value) -> String {
         .and_then(Value::as_str)
         .unwrap_or("")
         .to_string()
+}
+
+/// Classify a `user_message_chunk`'s `content` into a display block.
+///
+/// Grok sends prose as `{type:"text"}` and a pasted image as an embedded
+/// `{type:"resource", resource:{blob, mimeType, uri}}` — it advertises
+/// `image:false`, so images ride as embedded resources. An image-mime resource
+/// is promoted to [`ContentBlock::Image`] (bytes: `blob → data`) so it renders
+/// as a thumbnail, matching the live path and every other agent's images; a
+/// non-image embedded resource folds to a `[uri](uri)` link (same as the live
+/// [`crate::acp::user_blocks_from_prompt`]) so the attachment is still visible
+/// instead of a blank turn. Anything else falls back to a (possibly empty) text
+/// block, preserving prior behavior for plain prompts.
+fn user_chunk_to_block(update: &Value) -> Option<ContentBlock> {
+    let content = update.get("content")?;
+    match content.get("type").and_then(Value::as_str).unwrap_or("") {
+        "resource" => {
+            let resource = content.get("resource")?;
+            let mime = resource.get("mimeType").and_then(Value::as_str);
+            let blob = resource.get("blob").and_then(Value::as_str);
+            match (mime, blob) {
+                (Some(mime), Some(blob)) if mime.starts_with("image/") => {
+                    Some(ContentBlock::Image {
+                        data: blob.to_string(),
+                        mime_type: mime.to_string(),
+                        uri: resource
+                            .get("uri")
+                            .and_then(Value::as_str)
+                            .map(str::to_string),
+                    })
+                }
+                _ => {
+                    let uri = resource.get("uri").and_then(Value::as_str).unwrap_or("");
+                    Some(ContentBlock::Text {
+                        text: format!("[{uri}]({uri})"),
+                    })
+                }
+            }
+        }
+        // Defensive: native ACP image content. Grok uses the `resource` shape
+        // above, but stay robust to a future/native image chunk.
+        "image" => {
+            let data = content.get("data").and_then(Value::as_str)?;
+            Some(ContentBlock::Image {
+                data: data.to_string(),
+                mime_type: content
+                    .get("mimeType")
+                    .and_then(Value::as_str)
+                    .unwrap_or("image/png")
+                    .to_string(),
+                uri: content
+                    .get("uri")
+                    .and_then(Value::as_str)
+                    .map(str::to_string),
+            })
+        }
+        // "text" and unknown kinds: existing behavior (reads `/content/text`).
+        _ => Some(ContentBlock::Text {
+            text: update_text(update),
+        }),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1100,6 +1196,42 @@ mod tests {
             ContentBlock::ToolResult { output_preview, is_error, .. }
                 if output_preview.as_deref() == Some("build ok") && !*is_error
         ));
+    }
+
+    #[test]
+    fn merges_prompt_text_and_image_resource_into_one_user_turn() {
+        // Grok (`image:false` + `embedded_context:true`) sends a pasted image as
+        // a separate `user_message_chunk` carrying an embedded resource blob,
+        // right after the prose chunk of the SAME prompt (same `promptIndex`).
+        // Both must land in ONE user turn as [Text, Image] — not a text turn
+        // plus a trailing empty/image-only turn (the bug this fixes).
+        let updates = concat!(
+            r#"{"method":"session/update","params":{"sessionId":"s","update":{"sessionUpdate":"user_message_chunk","content":{"type":"text","text":"这是什么"},"_meta":{"modelId":"grok-4.5","promptIndex":0}}},"timestamp":1783584019}"#, "\n",
+            r#"{"method":"session/update","params":{"sessionId":"s","update":{"sessionUpdate":"user_message_chunk","content":{"type":"resource","resource":{"blob":"QUJD","mimeType":"image/png","uri":"clipboard://image.png-abc"}},"_meta":{"promptIndex":0}}},"timestamp":1783584019}"#, "\n",
+            r#"{"method":"session/update","params":{"sessionId":"s","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"一张截图"}}},"timestamp":1783584024}"#, "\n",
+            r#"{"method":"session/update","params":{"sessionId":"s","update":{"sessionUpdate":"turn_completed","stop_reason":"end_turn"}},"timestamp":1783584024}"#, "\n",
+        );
+        let (_tmp, sessions) = fixture(SUMMARY, updates);
+        let parser = GrokParser::with_base_dir(sessions);
+        let detail = parser
+            .get_conversation("019f45e3-e1ef-7690-a29f-fe2554382b49")
+            .unwrap();
+        let turns = &detail.turns;
+        // One user turn + one assistant turn — NOT two user turns.
+        assert_eq!(turns.len(), 2);
+        assert!(matches!(turns[0].role, TurnRole::User));
+        assert_eq!(turns[0].blocks.len(), 2);
+        assert!(
+            matches!(&turns[0].blocks[0], ContentBlock::Text { text } if text == "这是什么")
+        );
+        assert!(matches!(
+            &turns[0].blocks[1],
+            ContentBlock::Image { data, mime_type, uri }
+                if data == "QUJD"
+                    && mime_type == "image/png"
+                    && uri.as_deref() == Some("clipboard://image.png-abc")
+        ));
+        assert!(matches!(turns[1].role, TurnRole::Assistant));
     }
 
     #[test]
