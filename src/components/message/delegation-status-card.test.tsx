@@ -135,7 +135,9 @@ describe("DelegationStatusCard", () => {
       />
     )
     expect(screen.getByTestId("delegation-status-card")).toHaveClass(
-      "bg-destructive/5"
+      "bg-destructive/5",
+      // Destructive card still gets the workspace-bg frosted surface.
+      "ws-msg-card"
     )
     fireEvent.click(screen.getByRole("button"))
     expect(screen.getByText("timed out")).toBeInTheDocument()

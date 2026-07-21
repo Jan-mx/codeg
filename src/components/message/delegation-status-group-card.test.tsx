@@ -408,7 +408,9 @@ describe("DelegationStatusGroupCard", () => {
       />
     )
     expect(screen.getByTestId("delegation-status-group")).toHaveClass(
-      "bg-destructive/5"
+      "bg-destructive/5",
+      // Destructive card still gets the workspace-bg frosted surface.
+      "ws-msg-card"
     )
   })
 
