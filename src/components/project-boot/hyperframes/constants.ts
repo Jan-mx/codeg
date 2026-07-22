@@ -12,11 +12,13 @@ export const HYPERFRAMES_RESOLUTION_OPTIONS = [
 
 // codeg's six agents, mapped to the `skills` CLI `--agent` ids used by the
 // global HyperFrames skills install. Order matches the backend allowlist.
+// `gemini-cli` is retained as the external skills CLI compatibility id; codeg
+// displays and launches that slot as Antigravity.
 export const HYPERFRAMES_SKILL_AGENTS = [
   { id: "claude-code", label: "Claude Code" },
   { id: "codex", label: "Codex" },
   { id: "opencode", label: "OpenCode" },
-  { id: "gemini-cli", label: "Gemini" },
+  { id: "gemini-cli", label: "Antigravity" },
   { id: "openclaw", label: "OpenClaw" },
   { id: "cline", label: "Cline" },
 ]

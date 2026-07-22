@@ -496,6 +496,16 @@ pub(crate) async fn verify_agent_installed(agent_type: AgentType) -> Result<(), 
                 )))
             }
         }
+        registry::AgentDistribution::SystemCommand { cmd, .. } => {
+            if resolve_command_on_path(cmd).is_some() {
+                Ok(())
+            } else {
+                Err(AcpError::SdkNotInstalled(format!(
+                    "{} is not installed. Please install `{cmd}` and make sure it is on PATH.",
+                    meta.name
+                )))
+            }
+        }
     }
 }
 
@@ -567,6 +577,27 @@ async fn detect_local_version(agent_type: AgentType) -> Option<String> {
                 .flatten()
         }
         registry::AgentDistribution::Uvx { .. } => binary_cache::uvx_prepared_version(agent_type),
+        registry::AgentDistribution::SystemCommand { cmd, .. } => {
+            detect_system_command_version(cmd).await
+        }
+    }
+}
+
+async fn detect_system_command_version(cmd: &str) -> Option<String> {
+    let path = resolve_command_on_path(cmd)?;
+    let output = crate::process::tokio_command(&path)
+        .arg("--version")
+        .output()
+        .await
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let version = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if version.is_empty() {
+        None
+    } else {
+        Some(version)
     }
 }
 
@@ -4540,7 +4571,12 @@ fn reconcile_hermes_runtime_env_in(home: &Path) -> Result<(), AcpError> {
 fn agent_local_config_path(agent_type: AgentType) -> Option<PathBuf> {
     match agent_type {
         AgentType::ClaudeCode => Some(home_dir_or_default().join(".claude").join("settings.json")),
-        AgentType::Gemini => Some(home_dir_or_default().join(".gemini").join("settings.json")),
+        AgentType::Gemini => Some(
+            home_dir_or_default()
+                .join(".gemini")
+                .join("antigravity-cli")
+                .join("settings.json"),
+        ),
         AgentType::OpenCode => Some(resolve_opencode_config_path()),
         AgentType::Cline => Some(cline_global_state_path()),
         // Kimi Code's native config is `~/.kimi-code/config.toml`. Exposing the
@@ -5162,7 +5198,11 @@ fn agent_env_keys(agent_type: AgentType) -> (&'static str, &'static str, &'stati
             "ANTHROPIC_AUTH_TOKEN",
             "ANTHROPIC_MODEL",
         ),
-        AgentType::Gemini => ("GOOGLE_GEMINI_BASE_URL", "GEMINI_API_KEY", "GEMINI_MODEL"),
+        AgentType::Gemini => (
+            "ANTIGRAVITY_BASE_URL",
+            "ANTIGRAVITY_API_KEY",
+            "ANTIGRAVITY_MODEL",
+        ),
         // Kimi Code does NOT read shell KIMI_API_KEY/OPENAI_API_KEY; the only
         // non-interactive credential path is the `KIMI_MODEL_*` family, which
         // also takes priority over `~/.kimi-code/config.toml`.
@@ -5284,7 +5324,7 @@ const CLAUDE_MODEL_KEY_MAP: &[(&str, &str)] = &[
 ///   ANTHROPIC_*_MODEL fields plus the ANTHROPIC_CUSTOM_MODEL_OPTION trio. Each
 ///   entry is `None` when the provider's JSON omits that key or has an empty
 ///   value.
-/// - Gemini: returns `GEMINI_MODEL`.
+/// - Antigravity (wire value `gemini`): returns `ANTIGRAVITY_MODEL`.
 /// - Codex: returns `OPENAI_MODEL` so the provider can override env_json (the
 ///   root `model` in `config.toml` is handled separately by
 ///   `provider_codex_model_action`).
@@ -5312,7 +5352,10 @@ pub(crate) fn parse_provider_model(
             }
         }
         AgentType::Gemini => {
-            out.insert("GEMINI_MODEL".to_string(), trimmed_raw.map(str::to_string));
+            out.insert(
+                "ANTIGRAVITY_MODEL".to_string(),
+                trimmed_raw.map(str::to_string),
+            );
         }
         // Kimi reads its model name from KIMI_MODEL_NAME (the `KIMI_MODEL_*`
         // family), not OPENAI_MODEL — see `agent_env_keys`.
@@ -6213,6 +6256,10 @@ pub(crate) async fn acp_get_agent_status_core(
             uvx_agent_launchable(*system_cmd),
             binary_cache::uvx_prepared_version(agent_type),
         ),
+        registry::AgentDistribution::SystemCommand { cmd, .. } => (
+            resolve_command_on_path(cmd).is_some(),
+            detect_system_command_version(cmd).await,
+        ),
     };
 
     Ok(crate::acp::types::AcpAgentStatus {
@@ -6286,6 +6333,11 @@ pub(crate) async fn acp_list_agents_core(db: &AppDatabase) -> Result<Vec<AcpAgen
                 "uvx",
                 binary_cache::uvx_prepared_version(agent_type),
             ),
+            registry::AgentDistribution::SystemCommand { cmd, .. } => (
+                resolve_command_on_path(cmd).is_some(),
+                "system",
+                detect_system_command_version(cmd).await,
+            ),
         };
 
         let mut env = setting
@@ -6318,7 +6370,7 @@ pub(crate) async fn acp_list_agents_core(db: &AppDatabase) -> Result<Vec<AcpAgen
         }
         let sort_order = setting.map(|m| m.sort_order).unwrap_or(idx as i32);
         // Persist detected version to DB for binary agents (npx written during install/upgrade)
-        if dist_type == "binary" {
+        if matches!(dist_type, "binary" | "system") {
             let _ = agent_setting_service::set_installed_version(
                 &db.conn,
                 agent_type,
@@ -7254,6 +7306,9 @@ pub(crate) async fn acp_download_agent_binary_core(
         registry::AgentDistribution::Uvx { .. } => Err(AcpError::protocol(
             "download is only supported for binary agents",
         )),
+        registry::AgentDistribution::SystemCommand { .. } => Err(AcpError::protocol(
+            "download is not supported for system command agents",
+        )),
     };
 
     match &result {
@@ -7360,17 +7415,15 @@ pub(crate) async fn acp_detect_agent_local_version_core(
         return Ok(Some(version));
     }
 
-    // Binary agents detect their version purely from the on-disk cache, so a
-    // `None` here means the binary is genuinely absent (cleared cache, or a
-    // failed custom/upgrade install). Return `None` authoritatively rather than
-    // falling back to the DB, which would resurrect a removed version as a
-    // phantom that can no longer be launched. The returned value does NOT depend
-    // on the mirror write below, so a swallowed write cannot reintroduce the
-    // phantom. (NPX detection runs `npm list`, which can fail transiently, so
-    // for npx we keep the DB value as a best-effort fallback.)
+    // Binary and system-command agents detect their version from launchable
+    // local state, so a `None` here is authoritative. Return it rather than
+    // falling back to the DB, which would resurrect a removed binary or stale
+    // system-command version as a phantom. (NPX detection runs `npm list`,
+    // which can fail transiently, so for npx we keep the DB value.)
     if matches!(
         registry::get_agent_meta(agent_type).distribution,
         registry::AgentDistribution::Binary { .. }
+            | registry::AgentDistribution::SystemCommand { .. }
     ) {
         let _ = agent_setting_service::set_installed_version(conn, agent_type, None).await;
         return Ok(None);
@@ -7491,6 +7544,9 @@ pub(crate) async fn acp_prepare_npx_agent_core(
         }
         registry::AgentDistribution::Binary { .. } => Err(AcpError::protocol(
             "prepare is only supported for npx agents",
+        )),
+        registry::AgentDistribution::SystemCommand { .. } => Err(AcpError::protocol(
+            "prepare is not supported for system command agents",
         )),
         registry::AgentDistribution::Uvx {
             package,
@@ -7615,6 +7671,11 @@ pub(crate) async fn acp_uninstall_agent_core(
             }
             registry::AgentDistribution::Uvx { .. } => {
                 binary_cache::clear_uvx_agent_prepared(agent_type)?;
+            }
+            registry::AgentDistribution::SystemCommand { .. } => {
+                return Err(AcpError::protocol(
+                    "uninstall is not supported for system command agents",
+                ));
             }
         }
 
@@ -8945,6 +9006,16 @@ wire_api = "chat"
     }
 
     #[test]
+    fn parse_provider_model_uses_antigravity_model_for_gemini_slot() {
+        let out = parse_provider_model(AgentType::Gemini, Some("Gemini 3.1 Pro (High)"));
+        assert_eq!(
+            out.get("ANTIGRAVITY_MODEL"),
+            Some(&Some("Gemini 3.1 Pro (High)".to_string()))
+        );
+        assert!(!out.contains_key("GEMINI_MODEL"));
+    }
+
+    #[test]
     fn merge_json_values_clears_stale_custom_model_option_via_null() {
         // The local-config cascade (cascade_update_agent_config) encodes a
         // cleared model key as JSON-null. merge_json_values must DELETE that key
@@ -9222,20 +9293,20 @@ wire_api = "chat"
     #[test]
     fn build_npm_install_spec_uses_registry_when_no_override() {
         assert_eq!(
-            build_npm_install_spec("@google/gemini-cli@0.44.1", None).unwrap(),
-            "@google/gemini-cli@0.44.1"
+            build_npm_install_spec("cline@3.0.9", None).unwrap(),
+            "cline@3.0.9"
         );
         assert_eq!(
-            build_npm_install_spec("@google/gemini-cli@0.44.1", Some("  ")).unwrap(),
-            "@google/gemini-cli@0.44.1"
+            build_npm_install_spec("cline@3.0.9", Some("  ")).unwrap(),
+            "cline@3.0.9"
         );
     }
 
     #[test]
     fn build_npm_install_spec_applies_custom_version() {
         assert_eq!(
-            build_npm_install_spec("@google/gemini-cli@0.44.1", Some("0.43.0")).unwrap(),
-            "@google/gemini-cli@0.43.0"
+            build_npm_install_spec("openclaw@2026.6.11", Some("2026.6.10")).unwrap(),
+            "openclaw@2026.6.10"
         );
         // Scoped/plain package name is preserved; a leading `v` is stripped.
         assert_eq!(
@@ -9281,9 +9352,9 @@ wire_api = "chat"
         std::fs::create_dir_all(&bin_dir).expect("create npm prefix bin directory");
 
         #[cfg(windows)]
-        let command_path = bin_dir.join("gemini.cmd");
+        let command_path = bin_dir.join("cline.cmd");
         #[cfg(not(windows))]
-        let command_path = bin_dir.join("gemini");
+        let command_path = bin_dir.join("cline");
 
         std::fs::write(&command_path, "").expect("write command shim");
         #[cfg(not(windows))]
@@ -9298,7 +9369,7 @@ wire_api = "chat"
                 .expect("mark command shim executable");
         }
 
-        let resolved = resolve_npx_command_from_npm_prefix("gemini", &prefix);
+        let resolved = resolve_npx_command_from_npm_prefix("cline", &prefix);
 
         assert_eq!(resolved.as_deref(), Some(command_path.as_path()));
         let _ = std::fs::remove_dir_all(prefix);
@@ -9323,10 +9394,10 @@ wire_api = "chat"
         let prefix = unique_test_dir("npm-prefix-non-executable");
         let bin_dir = npm_prefix_bin_dir(&prefix);
         std::fs::create_dir_all(&bin_dir).expect("create npm prefix bin directory");
-        let command_path = bin_dir.join("gemini");
+        let command_path = bin_dir.join("cline");
         std::fs::write(&command_path, "").expect("write command shim");
 
-        let resolved = resolve_npx_command_from_npm_prefix("gemini", &prefix);
+        let resolved = resolve_npx_command_from_npm_prefix("cline", &prefix);
 
         assert_eq!(resolved, None);
         let _ = std::fs::remove_dir_all(prefix);

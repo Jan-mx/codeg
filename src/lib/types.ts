@@ -739,7 +739,7 @@ export const HERMES_PROVIDERS: HermesProviderOption[] = [
   },
   {
     id: "google-gemini-cli",
-    label: "Gemini CLI",
+    label: "Antigravity CLI",
     needsBaseUrl: false,
     kind: "oauth",
   },
@@ -776,7 +776,7 @@ export const AGENT_LABELS: Record<AgentType, string> = {
   claude_code: "Claude Code",
   codex: "Codex",
   open_code: "OpenCode",
-  gemini: "Gemini CLI",
+  gemini: "Antigravity CLI",
   open_claw: "OpenClaw",
   cline: "Cline",
   hermes: "Hermes Agent",

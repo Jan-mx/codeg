@@ -23,7 +23,7 @@ impl fmt::Display for AgentType {
             AgentType::ClaudeCode => write!(f, "Claude Code"),
             AgentType::Codex => write!(f, "Codex CLI"),
             AgentType::OpenCode => write!(f, "OpenCode"),
-            AgentType::Gemini => write!(f, "Gemini CLI"),
+            AgentType::Gemini => write!(f, "Antigravity CLI"),
             AgentType::OpenClaw => write!(f, "OpenClaw"),
             AgentType::Cline => write!(f, "Cline"),
             AgentType::Hermes => write!(f, "Hermes Agent"),

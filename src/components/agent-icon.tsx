@@ -64,7 +64,7 @@ const GeminiCliColorIcon = memo(function GeminiCliColorIcon({
       width={size}
       xmlns="http://www.w3.org/2000/svg"
     >
-      <title>Gemini CLI</title>
+      <title>Antigravity CLI</title>
       <path
         d="M0 4.391A4.391 4.391 0 014.391 0h15.217A4.391 4.391 0 0124 4.391v15.217A4.391 4.391 0 0119.608 24H4.391A4.391 4.391 0 010 19.608V4.391z"
         fill={`url(#${id})`}

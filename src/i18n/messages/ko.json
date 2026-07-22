@@ -671,23 +671,23 @@
       "loginSaveFailed": "로그인 성공했지만 설정 저장 실패"
     },
     "gemini": {
-      "authConfig": "Gemini 인증 설정",
-      "authConfigDescription": "Gemini CLI 인증 문서와 정렬되며, 커스텀 엔드포인트, Google 로그인, Gemini API Key, Vertex AI(ADC / 서비스 계정 / API Key)를 지원합니다.",
-      "authMode": "인증 모드",
-      "selectAuthMode": "인증 모드 선택",
-      "viewAuthDoc": "인증 문서 보기",
+      "authConfig": "Antigravity Settings",
+      "authConfigDescription": "Runs Antigravity CLI through the local agy command. Configure only model, project, conversation, and print timeout.",
+      "authMode": "Runtime Mode",
+      "selectAuthMode": "Select runtime mode",
+      "viewAuthDoc": "View Antigravity docs",
       "mode": {
-        "custom": "커스텀 엔드포인트",
-        "loginGoogle": "Google 로그인 (OAuth)",
-        "vertexServiceAccount": "Vertex AI (서비스 계정)"
+        "custom": "Custom runtime options",
+        "loginGoogle": "Local agy login status",
+        "vertexServiceAccount": "Local agy configuration"
       },
       "hint": {
-        "custom": "API URL, API Key, Model을 입력하세요. GOOGLE_GEMINI_BASE_URL / GEMINI_API_KEY / GEMINI_MODEL에 매핑됩니다.",
-        "loginGoogle": "먼저 터미널에서 gemini를 실행해 Google 로그인을 완료하세요. API key는 필요하지 않습니다.",
-        "geminiApiKey": "Gemini API 사용 시 GEMINI_API_KEY를 입력하세요.",
-        "vertexAdc": "gcloud ADC를 사용합니다. GOOGLE_CLOUD_PROJECT와 GOOGLE_CLOUD_LOCATION 설정을 권장합니다.",
-        "vertexServiceAccount": "서비스 계정 JSON 경로를 GOOGLE_APPLICATION_CREDENTIALS에 설정하세요.",
-        "vertexApiKey": "Vertex AI API key 사용 시 GOOGLE_API_KEY를 입력하세요."
+        "custom": "Set ANTIGRAVITY_MODEL, ANTIGRAVITY_PROJECT, ANTIGRAVITY_CONVERSATION, and ANTIGRAVITY_PRINT_TIMEOUT.",
+        "loginGoogle": "Confirm agy is authenticated and runnable from the terminal.",
+        "geminiApiKey": "Legacy API key fields are ignored by the Antigravity CLI slot.",
+        "vertexAdc": "Legacy cloud auth fields are ignored by the Antigravity CLI slot.",
+        "vertexServiceAccount": "Legacy service account fields are ignored by the Antigravity CLI slot.",
+        "vertexApiKey": "Legacy API key fields are ignored by the Antigravity CLI slot."
       }
     },
     "openCode": {

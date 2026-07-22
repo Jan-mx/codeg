@@ -276,6 +276,59 @@ const MODEL_OPTION: SessionConfigOptionInfo = {
   },
 }
 
+describe("MessageInput inline model selector", () => {
+  afterEach(() => cleanup())
+
+  it("renders the model selector in the composer's lower-left toolbar", async () => {
+    const antigravityModel: SessionConfigOptionInfo = {
+      ...MODEL_OPTION,
+      kind: {
+        type: "select",
+        current_value: "Gemini 3.1 Pro (High)",
+        options: [
+          {
+            value: "Gemini 3.1 Pro (High)",
+            name: "Gemini 3.1 Pro (High)",
+            description: null,
+          },
+          {
+            value: "Gemini 3.5 Flash (High)",
+            name: "Gemini 3.5 Flash (High)",
+            description: null,
+          },
+        ],
+        groups: [],
+      },
+    }
+    const { container } = renderInput({
+      agentType: "gemini",
+      configOptions: [antigravityModel],
+    })
+    await waitFor(() =>
+      expect(container.querySelector('[role="textbox"]')).not.toBeNull()
+    )
+
+    const addButton = screen.getByRole("button", {
+      name: enMessages.Folder.chat.messageInput.addActions,
+    })
+    const modelButton = screen.getByRole("button", {
+      name: "Model: Gemini 3.1 Pro (High)",
+    })
+    const sendButton = screen.getByRole("button", {
+      name: enMessages.Folder.chat.messageInput.send,
+    })
+
+    expect(
+      addButton.compareDocumentPosition(modelButton) &
+        Node.DOCUMENT_POSITION_FOLLOWING
+    ).toBeTruthy()
+    expect(
+      modelButton.compareDocumentPosition(sendButton) &
+        Node.DOCUMENT_POSITION_FOLLOWING
+    ).toBeTruthy()
+  })
+})
+
 describe("MessageInput collapsed selectors popover", () => {
   afterEach(() => cleanup())
 

@@ -221,6 +221,22 @@ describe("buildGrokSaveOptions — one save persists both surfaces", () => {
 })
 
 describe("buildVersionCheck", () => {
+  it("treats system command agents as unmanaged runtime checks", () => {
+    const check = buildVersionCheck(
+      makeAgent({
+        agent_type: "gemini" as AgentType,
+        name: "Antigravity CLI",
+        distribution_type: "system",
+        registry_version: null,
+        installed_version: "1.0.15",
+      })
+    )
+
+    expect(check?.status).toBe("pass")
+    expect(check?.message).toContain("1.0.15")
+    expect(check?.fixes).toHaveLength(0)
+  })
+
   // uv runtime not ready: a uvx agent (Hermes) must surface a blocked
   // version-status with the agent-install action DISABLED — the actual install
   // happens via the separate "Install uv" preflight action, not here.

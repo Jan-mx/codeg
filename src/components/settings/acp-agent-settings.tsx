@@ -152,12 +152,9 @@ interface AgentDraft {
   model: string
   claudeAuthMode: ClaudeAuthMode
   modelProviderId: number | null
-  geminiAuthMode: GeminiAuthMode
-  geminiApiKey: string
-  googleApiKey: string
-  googleCloudProject: string
-  googleCloudLocation: string
-  googleApplicationCredentials: string
+  antigravityProject: string
+  antigravityConversation: string
+  antigravityPrintTimeout: string
   codexAuthMode: CodexAuthMode
   codexModelProvider: string
   codexProviderOptions: string[]
@@ -257,7 +254,14 @@ function acpText(
   fallback: string,
   values?: Record<string, string | number>
 ): string {
-  if (!acpTranslator) return fallback
+  if (!acpTranslator) {
+    if (!values) return fallback
+    return fallback.replace(/\{(\w+)\}/g, (match, name: string) =>
+      Object.prototype.hasOwnProperty.call(values, name)
+        ? String(values[name])
+        : match
+    )
+  }
   return acpTranslator(key, values)
 }
 
@@ -355,29 +359,11 @@ function normalizeClaudeEffortLevel(value: unknown): ClaudeEffortLevel {
   return ""
 }
 
-const GEMINI_AUTH_MODES = [
-  "custom",
-  "login_google",
-  "gemini_api_key",
-  "vertex_adc",
-  "vertex_service_account",
-  "vertex_api_key",
-  "model_provider",
-] as const
-
-type GeminiAuthMode = (typeof GEMINI_AUTH_MODES)[number]
-
-const GEMINI_ENV_KEYS = {
-  baseUrl: "GOOGLE_GEMINI_BASE_URL",
-  legacyBaseUrl: "GEMINI_BASE_URL",
-  geminiApiKey: "GEMINI_API_KEY",
-  legacyGeminiApiKey: "GOOGLE_GEMINI_API_KEY",
-  googleApiKey: "GOOGLE_API_KEY",
-  cloudProject: "GOOGLE_CLOUD_PROJECT",
-  cloudProjectLegacy: "GOOGLE_CLOUD_PROJECT_ID",
-  cloudLocation: "GOOGLE_CLOUD_LOCATION",
-  applicationCredentials: "GOOGLE_APPLICATION_CREDENTIALS",
-  model: "GEMINI_MODEL",
+const ANTIGRAVITY_ENV_KEYS = {
+  model: "ANTIGRAVITY_MODEL",
+  project: "ANTIGRAVITY_PROJECT",
+  conversation: "ANTIGRAVITY_CONVERSATION",
+  printTimeout: "ANTIGRAVITY_PRINT_TIMEOUT",
 } as const
 
 const OPENCLAW_ENV_KEYS = {
@@ -428,14 +414,9 @@ function importantEnvKeysByAgent(agentType: AgentType): ImportantEnvKeys {
   }
   if (agentType === "gemini") {
     return {
-      apiBaseUrl: ["GOOGLE_GEMINI_BASE_URL", "GEMINI_BASE_URL", "API_BASE_URL"],
-      apiKey: [
-        GEMINI_ENV_KEYS.geminiApiKey,
-        GEMINI_ENV_KEYS.googleApiKey,
-        GEMINI_ENV_KEYS.legacyGeminiApiKey,
-        "API_KEY",
-      ],
-      model: ["GEMINI_MODEL", "MODEL"],
+      apiBaseUrl: [],
+      apiKey: [],
+      model: [ANTIGRAVITY_ENV_KEYS.model, "MODEL"],
     }
   }
   if (agentType === "grok") {
@@ -676,83 +657,21 @@ function extractImportantConfigValues(
   }
 }
 
-interface GeminiImportantValues {
-  authMode: GeminiAuthMode
-  apiBaseUrl: string
-  geminiApiKey: string
-  googleApiKey: string
-  googleCloudProject: string
-  googleCloudLocation: string
-  googleApplicationCredentials: string
+interface AntigravityImportantValues {
   model: string
+  project: string
+  conversation: string
+  printTimeout: string
 }
 
-function inferGeminiAuthMode(values: {
-  apiBaseUrl: string
-  geminiApiKey: string
-  googleApiKey: string
-  googleCloudProject: string
-  googleCloudLocation: string
-  googleApplicationCredentials: string
-}): GeminiAuthMode {
-  if (values.apiBaseUrl.trim()) return "custom"
-  if (values.geminiApiKey.trim()) return "gemini_api_key"
-  if (values.googleApiKey.trim()) return "vertex_api_key"
-  if (values.googleApplicationCredentials.trim())
-    return "vertex_service_account"
-  if (values.googleCloudProject.trim() || values.googleCloudLocation.trim()) {
-    return "vertex_adc"
-  }
-  return "login_google"
-}
-
-function extractGeminiImportantValues(
-  env: Record<string, string>,
-  configText: string
-): GeminiImportantValues {
-  const parseResult = parseConfigJsonText(configText)
-  const config = parseResult.config
-  const configEnv = envFromConfig(config)
-  const mergedEnv = { ...env, ...configEnv }
-
-  const apiBaseUrl = findEnvValue(mergedEnv, [
-    GEMINI_ENV_KEYS.baseUrl,
-    GEMINI_ENV_KEYS.legacyBaseUrl,
-    "API_BASE_URL",
-  ])
-  const geminiApiKey = findEnvValue(mergedEnv, [
-    GEMINI_ENV_KEYS.geminiApiKey,
-    GEMINI_ENV_KEYS.legacyGeminiApiKey,
-  ])
-  const googleApiKey = findEnvValue(mergedEnv, [GEMINI_ENV_KEYS.googleApiKey])
-  const googleCloudProject = findEnvValue(mergedEnv, [
-    GEMINI_ENV_KEYS.cloudProject,
-    GEMINI_ENV_KEYS.cloudProjectLegacy,
-  ])
-  const googleCloudLocation = findEnvValue(mergedEnv, [
-    GEMINI_ENV_KEYS.cloudLocation,
-  ])
-  const googleApplicationCredentials = findEnvValue(mergedEnv, [
-    GEMINI_ENV_KEYS.applicationCredentials,
-  ])
-  const model = findEnvValue(mergedEnv, [GEMINI_ENV_KEYS.model, "MODEL"])
-
+function extractAntigravityImportantValues(
+  env: Record<string, string>
+): AntigravityImportantValues {
   return {
-    authMode: inferGeminiAuthMode({
-      apiBaseUrl,
-      geminiApiKey,
-      googleApiKey,
-      googleCloudProject,
-      googleCloudLocation,
-      googleApplicationCredentials,
-    }),
-    apiBaseUrl,
-    geminiApiKey,
-    googleApiKey,
-    googleCloudProject,
-    googleCloudLocation,
-    googleApplicationCredentials,
-    model: model ?? "",
+    model: env[ANTIGRAVITY_ENV_KEYS.model]?.trim() ?? "",
+    project: env[ANTIGRAVITY_ENV_KEYS.project]?.trim() ?? "",
+    conversation: env[ANTIGRAVITY_ENV_KEYS.conversation]?.trim() ?? "",
+    printTimeout: env[ANTIGRAVITY_ENV_KEYS.printTimeout]?.trim() ?? "",
   }
 }
 
@@ -796,239 +715,6 @@ function extractOpenClawImportantValues(
     gatewayToken: findEnvValue(mergedEnv, [OPENCLAW_ENV_KEYS.gatewayToken]),
     sessionKey: findEnvValue(mergedEnv, [OPENCLAW_ENV_KEYS.sessionKey]),
   }
-}
-
-function patchGeminiConfigText(
-  configText: string,
-  patch: {
-    apiBaseUrl?: string
-    model?: string
-    geminiApiKey?: string
-    googleApiKey?: string
-    googleCloudProject?: string
-    googleCloudLocation?: string
-    googleApplicationCredentials?: string
-  }
-): {
-  configText: string
-  recoveredFromInvalid: boolean
-} {
-  const parseResult = parseConfigJsonText(configText)
-  const config = parseResult.error ? {} : { ...parseResult.config }
-  const env =
-    typeof config.env === "object" && config.env && !Array.isArray(config.env)
-      ? { ...(config.env as Record<string, unknown>) }
-      : {}
-
-  const assignOrRemoveEnv = (key: string, value: string | undefined) => {
-    if (typeof value !== "string") return
-    const trimmed = value.trim()
-    if (!trimmed) {
-      delete env[key]
-      return
-    }
-    env[key] = trimmed
-  }
-
-  if (typeof patch.model === "string") {
-    delete config.model
-    delete config.model_name
-    assignOrRemoveEnv(GEMINI_ENV_KEYS.model, patch.model)
-  }
-  assignOrRemoveEnv(GEMINI_ENV_KEYS.baseUrl, patch.apiBaseUrl)
-  if (typeof patch.apiBaseUrl === "string") {
-    assignOrRemoveEnv(GEMINI_ENV_KEYS.legacyBaseUrl, "")
-  }
-  assignOrRemoveEnv(GEMINI_ENV_KEYS.geminiApiKey, patch.geminiApiKey)
-  assignOrRemoveEnv(GEMINI_ENV_KEYS.googleApiKey, patch.googleApiKey)
-  if (typeof patch.geminiApiKey === "string") {
-    assignOrRemoveEnv(GEMINI_ENV_KEYS.legacyGeminiApiKey, "")
-  }
-  if (typeof patch.googleCloudProject === "string") {
-    const project = patch.googleCloudProject.trim()
-    if (!project) {
-      delete env[GEMINI_ENV_KEYS.cloudProject]
-      delete env[GEMINI_ENV_KEYS.cloudProjectLegacy]
-    } else {
-      env[GEMINI_ENV_KEYS.cloudProject] = project
-      delete env[GEMINI_ENV_KEYS.cloudProjectLegacy]
-    }
-  }
-  assignOrRemoveEnv(GEMINI_ENV_KEYS.cloudLocation, patch.googleCloudLocation)
-  assignOrRemoveEnv(
-    GEMINI_ENV_KEYS.applicationCredentials,
-    patch.googleApplicationCredentials
-  )
-
-  if (Object.keys(env).length === 0) {
-    delete config.env
-  } else {
-    config.env = env
-  }
-
-  return {
-    configText:
-      Object.keys(config).length === 0 ? "" : JSON.stringify(config, null, 2),
-    recoveredFromInvalid: Boolean(parseResult.error),
-  }
-}
-
-function patchGeminiEnvText(
-  envText: string,
-  patch: {
-    apiBaseUrl?: string
-    geminiApiKey?: string
-    googleApiKey?: string
-    googleCloudProject?: string
-    googleCloudLocation?: string
-    googleApplicationCredentials?: string
-    model?: string
-  }
-): string {
-  const envPatch: Record<string, string | undefined> = {}
-  if (typeof patch.apiBaseUrl === "string") {
-    envPatch[GEMINI_ENV_KEYS.baseUrl] = patch.apiBaseUrl
-    envPatch[GEMINI_ENV_KEYS.legacyBaseUrl] = ""
-  }
-  if (typeof patch.geminiApiKey === "string") {
-    envPatch[GEMINI_ENV_KEYS.geminiApiKey] = patch.geminiApiKey
-    envPatch[GEMINI_ENV_KEYS.legacyGeminiApiKey] = ""
-  }
-  if (typeof patch.googleApiKey === "string") {
-    envPatch[GEMINI_ENV_KEYS.googleApiKey] = patch.googleApiKey
-  }
-  if (typeof patch.googleCloudProject === "string") {
-    envPatch[GEMINI_ENV_KEYS.cloudProject] = patch.googleCloudProject
-    envPatch[GEMINI_ENV_KEYS.cloudProjectLegacy] = ""
-  }
-  if (typeof patch.googleCloudLocation === "string") {
-    envPatch[GEMINI_ENV_KEYS.cloudLocation] = patch.googleCloudLocation
-  }
-  if (typeof patch.googleApplicationCredentials === "string") {
-    envPatch[GEMINI_ENV_KEYS.applicationCredentials] =
-      patch.googleApplicationCredentials
-  }
-  if (typeof patch.model === "string") {
-    envPatch[GEMINI_ENV_KEYS.model] = patch.model
-  }
-  return patchEnvText(envText, envPatch)
-}
-
-function patchGeminiAuthMode(
-  current: GeminiImportantValues,
-  mode: GeminiAuthMode
-) {
-  const next = {
-    ...current,
-    authMode: mode,
-  }
-  if (mode === "login_google") {
-    next.apiBaseUrl = ""
-    next.geminiApiKey = ""
-    next.googleApiKey = ""
-    next.googleCloudProject = ""
-    next.googleCloudLocation = ""
-    next.googleApplicationCredentials = ""
-    return next
-  }
-  if (mode === "custom") {
-    next.googleApiKey = ""
-    next.googleCloudProject = ""
-    next.googleCloudLocation = ""
-    next.googleApplicationCredentials = ""
-    return next
-  }
-  if (mode === "gemini_api_key") {
-    next.apiBaseUrl = ""
-    next.googleApiKey = ""
-    next.googleCloudProject = ""
-    next.googleCloudLocation = ""
-    next.googleApplicationCredentials = ""
-    return next
-  }
-  if (mode === "vertex_api_key") {
-    next.apiBaseUrl = ""
-    next.geminiApiKey = ""
-    next.googleApplicationCredentials = ""
-    return next
-  }
-  if (mode === "vertex_service_account") {
-    next.apiBaseUrl = ""
-    next.geminiApiKey = ""
-    next.googleApiKey = ""
-    return next
-  }
-  if (mode === "model_provider") {
-    next.googleCloudProject = ""
-    next.googleCloudLocation = ""
-    next.googleApplicationCredentials = ""
-    return next
-  }
-  next.apiBaseUrl = ""
-  next.geminiApiKey = ""
-  next.googleApiKey = ""
-  next.googleApplicationCredentials = ""
-  return next
-}
-
-function geminiAuthModeLabel(mode: GeminiAuthMode): string {
-  if (mode === "custom")
-    return acpText("authModeCustomEndpoint", "Custom Endpoint")
-  if (mode === "login_google")
-    return acpText("gemini.mode.loginGoogle", "Google Login (OAuth)")
-  if (mode === "gemini_api_key") return "Gemini API Key"
-  if (mode === "vertex_adc") return "Vertex AI (ADC)"
-  if (mode === "vertex_service_account")
-    return acpText(
-      "gemini.mode.vertexServiceAccount",
-      "Vertex AI (Service Account)"
-    )
-  if (mode === "model_provider")
-    return acpText("authModeModelProvider", "Model Provider")
-  return "Vertex AI API Key"
-}
-
-function geminiAuthModeHint(mode: GeminiAuthMode): string {
-  if (mode === "custom") {
-    return acpText(
-      "gemini.hint.custom",
-      "Fill API URL, API Key and Model, mapped to GOOGLE_GEMINI_BASE_URL / GEMINI_API_KEY / GEMINI_MODEL."
-    )
-  }
-  if (mode === "login_google") {
-    return acpText(
-      "gemini.hint.loginGoogle",
-      "Run gemini in terminal and complete Google login first; API key is not required."
-    )
-  }
-  if (mode === "gemini_api_key") {
-    return acpText(
-      "gemini.hint.geminiApiKey",
-      "Fill GEMINI_API_KEY when using Gemini API."
-    )
-  }
-  if (mode === "vertex_adc") {
-    return acpText(
-      "gemini.hint.vertexAdc",
-      "Use gcloud ADC; GOOGLE_CLOUD_PROJECT and GOOGLE_CLOUD_LOCATION are recommended."
-    )
-  }
-  if (mode === "vertex_service_account") {
-    return acpText(
-      "gemini.hint.vertexServiceAccount",
-      "Set service account JSON path to GOOGLE_APPLICATION_CREDENTIALS."
-    )
-  }
-  if (mode === "model_provider") {
-    return acpText(
-      "modelProviderHint",
-      "Use API URL and API Key from a configured model provider."
-    )
-  }
-  return acpText(
-    "gemini.hint.vertexApiKey",
-    "Fill GOOGLE_API_KEY when using Vertex AI API key."
-  )
 }
 
 /**
@@ -2673,7 +2359,7 @@ function buildAgentDraft(agent: AcpAgentInfo): AgentDraft {
     agent.env,
     configText
   )
-  const geminiImportant = extractGeminiImportantValues(agent.env, configText)
+  const antigravityImportant = extractAntigravityImportantValues(agent.env)
   const openClawImportant = extractOpenClawImportantValues(
     agent.env,
     configText
@@ -2711,24 +2397,20 @@ function buildAgentDraft(agent: AcpAgentInfo): AgentDraft {
         ? (hermesValues?.baseUrl ?? "")
         : agent.agent_type === "codex"
           ? codexImportant.apiBaseUrl
-          : agent.agent_type === "gemini"
-            ? geminiImportant.apiBaseUrl
-            : important.apiBaseUrl,
+          : important.apiBaseUrl,
     apiKey:
       agent.agent_type === "hermes"
         ? (hermesValues?.apiKey ?? "")
         : agent.agent_type === "codex"
           ? (codexImportant.apiKey ?? "")
-          : agent.agent_type === "gemini"
-            ? geminiImportant.geminiApiKey || geminiImportant.googleApiKey
-            : important.apiKey,
+          : important.apiKey,
     model:
       agent.agent_type === "hermes"
         ? (hermesValues?.model ?? "")
         : agent.agent_type === "codex"
           ? codexImportant.model
           : agent.agent_type === "gemini"
-            ? geminiImportant.model
+            ? antigravityImportant.model
             : agent.agent_type === "open_code"
               ? openCodeImportant.model
               : important.model,
@@ -2740,15 +2422,9 @@ function buildAgentDraft(agent: AcpAgentInfo): AgentDraft {
           ? "custom"
           : "official_subscription",
     modelProviderId: agent.model_provider_id ?? null,
-    geminiAuthMode:
-      agent.agent_type === "gemini" && agent.model_provider_id != null
-        ? "model_provider"
-        : geminiImportant.authMode,
-    geminiApiKey: geminiImportant.geminiApiKey,
-    googleApiKey: geminiImportant.googleApiKey,
-    googleCloudProject: geminiImportant.googleCloudProject,
-    googleCloudLocation: geminiImportant.googleCloudLocation,
-    googleApplicationCredentials: geminiImportant.googleApplicationCredentials,
+    antigravityProject: antigravityImportant.project,
+    antigravityConversation: antigravityImportant.conversation,
+    antigravityPrintTimeout: antigravityImportant.printTimeout,
     codexAuthMode,
     codexModelProvider: codexImportant.modelProvider,
     codexProviderOptions: codexImportant.providerOptions,
@@ -2841,6 +2517,26 @@ export function buildVersionCheck(
   agent: AcpAgentInfo,
   uvReady: boolean = true
 ): UiCheckItem | null {
+  if (agent.distribution_type === "system") {
+    const localVersion =
+      agent.installed_version ?? acpText("version.notInstalled", "Not installed")
+    return {
+      check_id: "version_status",
+      label: acpText("version.statusLabel", "Version Status"),
+      status: agent.available ? "pass" : "fail",
+      message: agent.available
+        ? acpText("version.systemCommandReady", "Local: {localVersion}", {
+            localVersion,
+          })
+        : acpText(
+            "version.systemCommandMissing",
+            "{agentName} is not installed or not in PATH.",
+            { agentName: agent.name }
+          ),
+      fixes: [],
+    }
+  }
+
   if (
     agent.distribution_type !== "binary" &&
     agent.distribution_type !== "npx" &&
@@ -4918,8 +4614,6 @@ export function AcpAgentSettings() {
     if (at === "claude_code")
       return selectedDraft.claudeAuthMode === "model_provider"
     if (at === "codex") return selectedDraft.codexAuthMode === "model_provider"
-    if (at === "gemini")
-      return selectedDraft.geminiAuthMode === "model_provider"
     return false
   }, [selectedAgent, selectedDraft])
 
@@ -5128,39 +4822,12 @@ export function AcpAgentSettings() {
         parseEnvText(selectedDraft.envText),
         nextText
       )
-      const geminiImportant =
-        selectedAgent.agent_type === "gemini"
-          ? extractGeminiImportantValues(
-              parseEnvText(selectedDraft.envText),
-              nextText
-            )
-          : null
       updateSelectedDraft((current) => ({
         ...current,
         configText: nextText,
-        apiBaseUrl: geminiImportant
-          ? geminiImportant.apiBaseUrl
-          : important.apiBaseUrl,
+        apiBaseUrl: important.apiBaseUrl,
         apiKey: important.apiKey,
-        model: geminiImportant ? geminiImportant.model : important.model,
-        geminiAuthMode: geminiImportant
-          ? geminiImportant.authMode
-          : current.geminiAuthMode,
-        geminiApiKey: geminiImportant
-          ? geminiImportant.geminiApiKey
-          : current.geminiApiKey,
-        googleApiKey: geminiImportant
-          ? geminiImportant.googleApiKey
-          : current.googleApiKey,
-        googleCloudProject: geminiImportant
-          ? geminiImportant.googleCloudProject
-          : current.googleCloudProject,
-        googleCloudLocation: geminiImportant
-          ? geminiImportant.googleCloudLocation
-          : current.googleCloudLocation,
-        googleApplicationCredentials: geminiImportant
-          ? geminiImportant.googleApplicationCredentials
-          : current.googleApplicationCredentials,
+        model: important.model,
         claudeMainModel: important.claudeMainModel,
         claudeReasoningModel: important.claudeReasoningModel,
         claudeDefaultHaikuModel: important.claudeDefaultHaikuModel,
@@ -5467,37 +5134,6 @@ export function AcpAgentSettings() {
             OPENAI_MODEL: codexModel,
           }),
         }))
-      } else if (agentType === "gemini") {
-        const geminiModel = provider?.model?.trim() ?? ""
-        const nextConfigJson = patchGeminiConfigText(selectedDraft.configText, {
-          apiBaseUrl: apiUrl,
-          geminiApiKey: apiKey,
-        })
-        setConfigErrors((prev) => ({
-          ...prev,
-          [agentType]: null,
-        }))
-        updateSelectedDraft((current) => {
-          let nextEnvText = patchGeminiEnvText(current.envText, {
-            apiBaseUrl: apiUrl,
-            geminiApiKey: apiKey,
-          })
-          // Always overwrite GEMINI_MODEL with the provider's value (empty
-          // string clears it).
-          nextEnvText = patchEnvText(nextEnvText, {
-            GEMINI_MODEL: geminiModel,
-          })
-          return {
-            ...current,
-            modelProviderId: providerId,
-            apiBaseUrl: apiUrl,
-            apiKey,
-            geminiApiKey: apiKey,
-            model: geminiModel,
-            envText: nextEnvText,
-            configText: nextConfigJson.configText,
-          }
-        })
       } else {
         updateSelectedDraft((current) => ({
           ...current,
@@ -5523,16 +5159,9 @@ export function AcpAgentSettings() {
     handleModelProviderSelect,
   ])
 
-  const handleGeminiFieldChange = useCallback(
+  const handleAntigravityFieldChange = useCallback(
     (
-      key:
-        | "apiBaseUrl"
-        | "model"
-        | "geminiApiKey"
-        | "googleApiKey"
-        | "googleCloudProject"
-        | "googleCloudLocation"
-        | "googleApplicationCredentials",
+      key: "model" | "antigravityProject" | "antigravityConversation" | "antigravityPrintTimeout",
       value: string
     ) => {
       if (
@@ -5542,148 +5171,31 @@ export function AcpAgentSettings() {
       )
         return
 
-      const nextValues = {
-        authMode: selectedDraft.geminiAuthMode,
-        apiBaseUrl: selectedDraft.apiBaseUrl,
-        geminiApiKey: selectedDraft.geminiApiKey,
-        googleApiKey: selectedDraft.googleApiKey,
-        googleCloudProject: selectedDraft.googleCloudProject,
-        googleCloudLocation: selectedDraft.googleCloudLocation,
-        googleApplicationCredentials:
-          selectedDraft.googleApplicationCredentials,
-        model: selectedDraft.model,
-      }
-      nextValues[key] = value
-      const normalizedValues = patchGeminiAuthMode(
-        nextValues,
-        nextValues.authMode
-      )
-
-      const nextConfig = patchGeminiConfigText(selectedDraft.configText, {
-        apiBaseUrl: normalizedValues.apiBaseUrl,
-        model: normalizedValues.model,
-        geminiApiKey: normalizedValues.geminiApiKey,
-        googleApiKey: normalizedValues.googleApiKey,
-        googleCloudProject: normalizedValues.googleCloudProject,
-        googleCloudLocation: normalizedValues.googleCloudLocation,
-        googleApplicationCredentials:
-          normalizedValues.googleApplicationCredentials,
-      })
-      if (nextConfig.recoveredFromInvalid) {
-        toast.warning(t("warnings.nativeJsonRecoveredStructured"))
-      }
-      setConfigErrors((prev) => ({
-        ...prev,
-        [selectedAgent.agent_type]: null,
-      }))
-
       updateSelectedDraft((current) => {
-        const nextEnvText = patchGeminiEnvText(current.envText, {
-          apiBaseUrl: normalizedValues.apiBaseUrl,
-          model: normalizedValues.model,
-          geminiApiKey: normalizedValues.geminiApiKey,
-          googleApiKey: normalizedValues.googleApiKey,
-          googleCloudProject: normalizedValues.googleCloudProject,
-          googleCloudLocation: normalizedValues.googleCloudLocation,
-          googleApplicationCredentials:
-            normalizedValues.googleApplicationCredentials,
+        const next = {
+          model: current.model,
+          antigravityProject: current.antigravityProject,
+          antigravityConversation: current.antigravityConversation,
+          antigravityPrintTimeout: current.antigravityPrintTimeout,
+          [key]: value,
+        }
+        const envText = patchEnvText(current.envText, {
+          [ANTIGRAVITY_ENV_KEYS.model]: next.model,
+          [ANTIGRAVITY_ENV_KEYS.project]: next.antigravityProject,
+          [ANTIGRAVITY_ENV_KEYS.conversation]: next.antigravityConversation,
+          [ANTIGRAVITY_ENV_KEYS.printTimeout]: next.antigravityPrintTimeout,
         })
         return {
           ...current,
-          apiBaseUrl: normalizedValues.apiBaseUrl,
-          model: normalizedValues.model,
-          apiKey:
-            normalizedValues.geminiApiKey || normalizedValues.googleApiKey,
-          geminiAuthMode: normalizedValues.authMode,
-          geminiApiKey: normalizedValues.geminiApiKey,
-          googleApiKey: normalizedValues.googleApiKey,
-          googleCloudProject: normalizedValues.googleCloudProject,
-          googleCloudLocation: normalizedValues.googleCloudLocation,
-          googleApplicationCredentials:
-            normalizedValues.googleApplicationCredentials,
-          envText: nextEnvText,
-          configText: nextConfig.configText,
+          model: next.model,
+          antigravityProject: next.antigravityProject,
+          antigravityConversation: next.antigravityConversation,
+          antigravityPrintTimeout: next.antigravityPrintTimeout,
+          envText,
         }
       })
     },
-    [selectedAgent, selectedDraft, t, updateSelectedDraft]
-  )
-
-  const handleGeminiAuthModeChange = useCallback(
-    (nextMode: GeminiAuthMode) => {
-      if (
-        !selectedAgent ||
-        !selectedDraft ||
-        selectedAgent.agent_type !== "gemini"
-      )
-        return
-
-      if (nextMode === "model_provider") {
-        // Keep existing values; provider selection will fill API URL/Key
-        updateSelectedDraft((current) => ({
-          ...current,
-          geminiAuthMode: nextMode,
-          modelProviderId: current.modelProviderId,
-        }))
-        return
-      }
-
-      const patched = patchGeminiAuthMode(
-        {
-          authMode: selectedDraft.geminiAuthMode,
-          apiBaseUrl: selectedDraft.apiBaseUrl,
-          geminiApiKey: selectedDraft.geminiApiKey,
-          googleApiKey: selectedDraft.googleApiKey,
-          googleCloudProject: selectedDraft.googleCloudProject,
-          googleCloudLocation: selectedDraft.googleCloudLocation,
-          googleApplicationCredentials:
-            selectedDraft.googleApplicationCredentials,
-          model: selectedDraft.model,
-        },
-        nextMode
-      )
-
-      const nextConfig = patchGeminiConfigText(selectedDraft.configText, {
-        apiBaseUrl: patched.apiBaseUrl,
-        model: patched.model,
-        geminiApiKey: patched.geminiApiKey,
-        googleApiKey: patched.googleApiKey,
-        googleCloudProject: patched.googleCloudProject,
-        googleCloudLocation: patched.googleCloudLocation,
-        googleApplicationCredentials: patched.googleApplicationCredentials,
-      })
-      if (nextConfig.recoveredFromInvalid) {
-        toast.warning(t("warnings.nativeJsonRecoveredStructured"))
-      }
-      setConfigErrors((prev) => ({
-        ...prev,
-        [selectedAgent.agent_type]: null,
-      }))
-
-      updateSelectedDraft((current) => ({
-        ...current,
-        geminiAuthMode: patched.authMode,
-        modelProviderId: null,
-        apiBaseUrl: patched.apiBaseUrl,
-        apiKey: patched.geminiApiKey || patched.googleApiKey,
-        geminiApiKey: patched.geminiApiKey,
-        googleApiKey: patched.googleApiKey,
-        googleCloudProject: patched.googleCloudProject,
-        googleCloudLocation: patched.googleCloudLocation,
-        googleApplicationCredentials: patched.googleApplicationCredentials,
-        envText: patchGeminiEnvText(current.envText, {
-          apiBaseUrl: patched.apiBaseUrl,
-          model: patched.model,
-          geminiApiKey: patched.geminiApiKey,
-          googleApiKey: patched.googleApiKey,
-          googleCloudProject: patched.googleCloudProject,
-          googleCloudLocation: patched.googleCloudLocation,
-          googleApplicationCredentials: patched.googleApplicationCredentials,
-        }),
-        configText: nextConfig.configText,
-      }))
-    },
-    [selectedAgent, selectedDraft, t, updateSelectedDraft]
+    [selectedAgent, selectedDraft, updateSelectedDraft]
   )
 
   const handleOpenClawFieldChange = useCallback(
@@ -7755,307 +7267,108 @@ supports_websockets = true`}
                   <div className="space-y-3 rounded-md border bg-muted/10 p-3">
                     <div>
                       <label className="text-xs font-medium">
-                        {t("gemini.authConfig")}
+                        Antigravity CLI
                       </label>
                       <p className="mt-1 text-[11px] text-muted-foreground">
-                        {t("gemini.authConfigDescription")}
+                        Uses the local agy executable in print mode.
                       </p>
                     </div>
 
-                    <div className="space-y-1.5">
-                      <label className="text-[11px] text-muted-foreground">
-                        {t("gemini.authMode")}
-                      </label>
-                      <Select
-                        value={selectedDraft.geminiAuthMode}
-                        onValueChange={(value) => {
-                          if (
-                            GEMINI_AUTH_MODES.includes(value as GeminiAuthMode)
-                          ) {
-                            handleGeminiAuthModeChange(value as GeminiAuthMode)
-                          }
-                        }}
-                      >
-                        <SelectTrigger className="w-full">
-                          <SelectValue
-                            placeholder={t("gemini.selectAuthMode")}
-                          />
-                        </SelectTrigger>
-                        <SelectContent align="start">
-                          {GEMINI_AUTH_MODES.map((mode) => (
-                            <SelectItem key={mode} value={mode}>
-                              {geminiAuthModeLabel(mode)}
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                      <p className="text-[11px] text-muted-foreground">
-                        {geminiAuthModeHint(selectedDraft.geminiAuthMode)}
-                      </p>
-                    </div>
-
-                    {selectedDraft.geminiAuthMode === "model_provider" && (
+                    <div className="grid gap-3 md:grid-cols-2">
                       <div className="space-y-1.5">
                         <label className="text-[11px] text-muted-foreground">
-                          {t("selectModelProvider")}
-                        </label>
-                        {selectedModelProviders.length > 0 ? (
-                          <Select
-                            value={
-                              selectedDraft.modelProviderId != null
-                                ? String(selectedDraft.modelProviderId)
-                                : ""
-                            }
-                            onValueChange={handleModelProviderSelect}
-                          >
-                            <SelectTrigger className="w-full">
-                              <SelectValue
-                                placeholder={t("selectModelProvider")}
-                              />
-                            </SelectTrigger>
-                            <SelectContent align="start">
-                              {selectedModelProviders.map((provider) => (
-                                <SelectItem
-                                  key={provider.id}
-                                  value={String(provider.id)}
-                                >
-                                  {provider.name}
-                                </SelectItem>
-                              ))}
-                            </SelectContent>
-                          </Select>
-                        ) : (
-                          <p className="text-[11px] text-muted-foreground">
-                            {t("noModelProviderAvailable")}
-                          </p>
-                        )}
-                      </div>
-                    )}
-
-                    <div className="space-y-1.5">
-                      <label className="text-[11px] text-muted-foreground">
-                        Model
-                      </label>
-                      <Input
-                        value={selectedDraft.model}
-                        readOnly={
-                          selectedDraft.geminiAuthMode === "model_provider"
-                        }
-                        onChange={(event) => {
-                          handleGeminiFieldChange("model", event.target.value)
-                        }}
-                        placeholder="gemini-3-pro-preview"
-                      />
-                      <p className="text-[11px] text-muted-foreground">
-                        {t("modelHintDefault")}
-                      </p>
-                    </div>
-
-                    {(selectedDraft.geminiAuthMode === "custom" ||
-                      selectedDraft.geminiAuthMode === "model_provider") && (
-                      <div className="space-y-1.5">
-                        <label className="text-[11px] text-muted-foreground">
-                          GOOGLE_GEMINI_BASE_URL
+                          Model
                         </label>
                         <Input
-                          value={selectedDraft.apiBaseUrl}
-                          readOnly={
-                            selectedDraft.geminiAuthMode === "model_provider"
-                          }
+                          value={selectedDraft.model}
                           onChange={(event) => {
-                            handleGeminiFieldChange(
-                              "apiBaseUrl",
+                            handleAntigravityFieldChange(
+                              "model",
                               event.target.value
                             )
                           }}
-                          placeholder="https://your-gemini-endpoint.example.com"
+                          placeholder="Gemini 3.1 Pro (High)"
                         />
                       </div>
-                    )}
-
-                    {(selectedDraft.geminiAuthMode === "custom" ||
-                      selectedDraft.geminiAuthMode === "gemini_api_key" ||
-                      selectedDraft.geminiAuthMode === "model_provider" ||
-                      selectedDraft.geminiAuthMode === "vertex_api_key") && (
                       <div className="space-y-1.5">
                         <label className="text-[11px] text-muted-foreground">
-                          {selectedDraft.geminiAuthMode === "vertex_api_key"
-                            ? "GOOGLE_API_KEY"
-                            : "GEMINI_API_KEY"}
-                        </label>
-                        <div className="flex items-center gap-2">
-                          <Input
-                            type={
-                              showApiKeys[selectedAgent.agent_type]
-                                ? "text"
-                                : "password"
-                            }
-                            value={
-                              selectedDraft.geminiAuthMode === "vertex_api_key"
-                                ? selectedDraft.googleApiKey
-                                : selectedDraft.geminiApiKey
-                            }
-                            readOnly={
-                              selectedDraft.geminiAuthMode === "model_provider"
-                            }
-                            onChange={(event) => {
-                              if (
-                                selectedDraft.geminiAuthMode ===
-                                "vertex_api_key"
-                              ) {
-                                handleGeminiFieldChange(
-                                  "googleApiKey",
-                                  event.target.value
-                                )
-                                return
-                              }
-                              handleGeminiFieldChange(
-                                "geminiApiKey",
-                                event.target.value
-                              )
-                            }}
-                            placeholder="AIza..."
-                          />
-                          <Button
-                            type="button"
-                            variant="outline"
-                            size="sm"
-                            onClick={() => {
-                              setShowApiKeys((prev) => ({
-                                ...prev,
-                                [selectedAgent.agent_type]:
-                                  !prev[selectedAgent.agent_type],
-                              }))
-                            }}
-                            title={
-                              showApiKeys[selectedAgent.agent_type]
-                                ? t("actions.hideKey")
-                                : t("actions.showKey")
-                            }
-                          >
-                            {showApiKeys[selectedAgent.agent_type] ? (
-                              <EyeOff className="h-3.5 w-3.5" />
-                            ) : (
-                              <Eye className="h-3.5 w-3.5" />
-                            )}
-                          </Button>
-                        </div>
-                      </div>
-                    )}
-
-                    {(selectedDraft.geminiAuthMode === "vertex_adc" ||
-                      selectedDraft.geminiAuthMode ===
-                        "vertex_service_account" ||
-                      selectedDraft.geminiAuthMode === "vertex_api_key") && (
-                      <div className="grid gap-3 md:grid-cols-2">
-                        <div className="space-y-1.5">
-                          <label className="text-[11px] text-muted-foreground">
-                            GOOGLE_CLOUD_PROJECT
-                          </label>
-                          <Input
-                            value={selectedDraft.googleCloudProject}
-                            onChange={(event) => {
-                              handleGeminiFieldChange(
-                                "googleCloudProject",
-                                event.target.value
-                              )
-                            }}
-                            placeholder="my-gcp-project-id"
-                          />
-                        </div>
-                        <div className="space-y-1.5">
-                          <label className="text-[11px] text-muted-foreground">
-                            GOOGLE_CLOUD_LOCATION
-                          </label>
-                          <Input
-                            value={selectedDraft.googleCloudLocation}
-                            onChange={(event) => {
-                              handleGeminiFieldChange(
-                                "googleCloudLocation",
-                                event.target.value
-                              )
-                            }}
-                            placeholder="global / us-central1"
-                          />
-                        </div>
-                      </div>
-                    )}
-
-                    {selectedDraft.geminiAuthMode ===
-                      "vertex_service_account" && (
-                      <div className="space-y-1.5">
-                        <label className="text-[11px] text-muted-foreground">
-                          GOOGLE_APPLICATION_CREDENTIALS
+                          Project
                         </label>
                         <Input
-                          value={selectedDraft.googleApplicationCredentials}
+                          value={selectedDraft.antigravityProject}
                           onChange={(event) => {
-                            handleGeminiFieldChange(
-                              "googleApplicationCredentials",
+                            handleAntigravityFieldChange(
+                              "antigravityProject",
                               event.target.value
                             )
                           }}
-                          placeholder="/path/to/service-account.json"
+                          placeholder="Optional project ID"
                         />
                       </div>
-                    )}
+                      <div className="space-y-1.5">
+                        <label className="text-[11px] text-muted-foreground">
+                          Conversation
+                        </label>
+                        <Input
+                          value={selectedDraft.antigravityConversation}
+                          onChange={(event) => {
+                            handleAntigravityFieldChange(
+                              "antigravityConversation",
+                              event.target.value
+                            )
+                          }}
+                          placeholder="Optional conversation ID"
+                        />
+                      </div>
+                      <div className="space-y-1.5">
+                        <label className="text-[11px] text-muted-foreground">
+                          Print Timeout
+                        </label>
+                        <Input
+                          value={selectedDraft.antigravityPrintTimeout}
+                          onChange={(event) => {
+                            handleAntigravityFieldChange(
+                              "antigravityPrintTimeout",
+                              event.target.value
+                            )
+                          }}
+                          placeholder="5m0s"
+                        />
+                      </div>
+                    </div>
 
                     <div className="flex items-center justify-between gap-2">
-                      <Button
-                        type="button"
-                        size="sm"
-                        variant="outline"
-                        onClick={() => {
-                          openUrl(
-                            "https://geminicli.com/docs/get-started/authentication/"
-                          ).catch((err) => {
-                            console.error(
-                              "[Settings] open gemini auth doc failed:",
-                              err
-                            )
-                          })
-                        }}
-                      >
-                        {t("gemini.viewAuthDoc")}
-                      </Button>
+                      <p className="text-[11px] text-muted-foreground">
+                        {selectedAgent.installed_version
+                          ? `agy ${selectedAgent.installed_version}`
+                          : "agy not found"}
+                      </p>
                       <Button
                         size="sm"
                         onClick={() => {
-                          if (selectedMissingModelProvider) {
-                            toast.error(t("toasts.modelProviderRequired"))
-                            return
-                          }
-                          Promise.all([
-                            persistEnv(
-                              selectedAgent.agent_type,
-                              selectedDraft.enabled,
-                              selectedDraft.envText,
-                              selectedDraft.modelProviderId
-                            ),
-                            persistConfig(
-                              selectedAgent.agent_type,
-                              selectedDraft.configText
-                            ),
-                          ])
+                          persistEnv(
+                            selectedAgent.agent_type,
+                            selectedDraft.enabled,
+                            selectedDraft.envText,
+                            null
+                          )
                             .then(() => {
-                              toast.success(t("toasts.geminiSaved"), {
-                                description: t("toasts.configSavedHint"),
-                              })
+                              toast.success("Antigravity settings saved")
                             })
                             .catch((err) => {
                               console.error(
-                                "[Settings] save gemini config failed:",
+                                "[Settings] save antigravity config failed:",
                                 err
                               )
                               const message = toErrorMessage(err)
-                              toast.error(t("toasts.saveGeminiFailed"), {
+                              toast.error("Failed to save Antigravity settings", {
                                 description: message,
                               })
                             })
                         }}
-                        disabled={selectedIsSavingEnv || selectedIsSavingConfig}
+                        disabled={selectedIsSavingEnv}
                       >
-                        {selectedIsSavingEnv || selectedIsSavingConfig ? (
+                        {selectedIsSavingEnv ? (
                           <>
                             <Loader2 className="h-3.5 w-3.5 animate-spin" />
                             {t("actions.saving")}
@@ -8063,7 +7376,7 @@ supports_websockets = true`}
                         ) : (
                           <>
                             <Save className="h-3.5 w-3.5" />
-                            {t("actions.saveGeminiConfig")}
+                            Save Antigravity Settings
                           </>
                         )}
                       </Button>

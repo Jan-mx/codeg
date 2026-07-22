@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, TimeZone, Utc};
 use serde_json::{Map, Value};
 use walkdir::WalkDir;
 
@@ -13,6 +13,20 @@ use crate::parsers::{
 
 pub struct GeminiParser {
     base_dir: PathBuf,
+}
+
+#[derive(Debug, Clone)]
+struct AntigravityHistoryEntry {
+    id: String,
+    display: Option<String>,
+    workspace: Option<String>,
+    timestamp: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone)]
+struct AntigravityParsedConversation {
+    summary: ConversationSummary,
+    messages: Vec<UnifiedMessage>,
 }
 
 impl Default for GeminiParser {
@@ -40,6 +54,18 @@ impl GeminiParser {
 
     fn history_dir(&self) -> PathBuf {
         self.base_dir.join("history")
+    }
+
+    fn antigravity_dir(&self) -> PathBuf {
+        self.base_dir.join("antigravity-cli")
+    }
+
+    fn antigravity_history_path(&self) -> PathBuf {
+        self.antigravity_dir().join("history.jsonl")
+    }
+
+    fn antigravity_brain_dir(&self) -> PathBuf {
+        self.antigravity_dir().join("brain")
     }
 
     fn projects_json_path(&self) -> PathBuf {
@@ -222,6 +248,11 @@ impl GeminiParser {
 
     fn parse_timestamp(value: Option<&serde_json::Value>) -> Option<DateTime<Utc>> {
         value.and_then(|v| v.as_str()?.parse::<DateTime<Utc>>().ok())
+    }
+
+    fn parse_millis_timestamp(value: Option<&serde_json::Value>) -> Option<DateTime<Utc>> {
+        let millis = value.and_then(|v| v.as_i64())?;
+        Utc.timestamp_millis_opt(millis).single()
     }
 
     fn extract_text(value: &Value) -> Option<String> {
@@ -455,6 +486,268 @@ impl GeminiParser {
             parent_tool_use_id: None,
             delegation_call_id: None,
         })
+    }
+
+    fn antigravity_history_entries(&self) -> HashMap<String, AntigravityHistoryEntry> {
+        let raw = match fs::read_to_string(self.antigravity_history_path()) {
+            Ok(raw) => raw,
+            Err(_) => return HashMap::new(),
+        };
+
+        let mut entries = HashMap::new();
+        for line in raw.lines() {
+            let trimmed = line.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            let Ok(value) = serde_json::from_str::<Value>(trimmed) else {
+                continue;
+            };
+            let timestamp = Self::parse_millis_timestamp(value.get("timestamp"));
+            let id = value
+                .get("conversationId")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string())
+                .or_else(|| timestamp.map(|ts| format!("history-{}", ts.timestamp_millis())));
+            let Some(id) = id else {
+                continue;
+            };
+            let entry = AntigravityHistoryEntry {
+                id: id.clone(),
+                display: value
+                    .get("display")
+                    .and_then(|v| v.as_str())
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .map(ToString::to_string),
+                workspace: value
+                    .get("workspace")
+                    .and_then(|v| v.as_str())
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .map(ToString::to_string),
+                timestamp,
+            };
+            entries.insert(id, entry);
+        }
+        entries
+    }
+
+    fn antigravity_transcript_files_for(&self, conversation_id: &str) -> Vec<PathBuf> {
+        let brain = self.antigravity_brain_dir();
+        let mut files = Vec::new();
+        let Ok(entries) = fs::read_dir(brain) else {
+            return files;
+        };
+        for entry in entries.flatten() {
+            if entry.file_name().to_string_lossy() != conversation_id {
+                continue;
+            }
+            let logs_dir = entry.path().join(".system_generated").join("logs");
+            if !logs_dir.exists() {
+                continue;
+            }
+            files.extend(
+                WalkDir::new(logs_dir)
+                    .into_iter()
+                    .filter_map(|e| e.ok())
+                    .map(|e| e.path().to_path_buf())
+                    .filter(|p| {
+                        p.is_file()
+                            && p.extension().and_then(|e| e.to_str()) == Some("jsonl")
+                            && p.file_name()
+                                .and_then(|n| n.to_str())
+                                .is_some_and(|name| name.starts_with("transcript"))
+                    }),
+            );
+        }
+        files.sort();
+        files
+    }
+
+    fn antigravity_conversation_ids(&self) -> Vec<String> {
+        let mut ids: Vec<String> = self.antigravity_history_entries().into_keys().collect();
+        if let Ok(entries) = fs::read_dir(self.antigravity_brain_dir()) {
+            ids.extend(entries.flatten().filter_map(|entry| {
+                entry
+                    .file_type()
+                    .ok()
+                    .filter(|ft| ft.is_dir())
+                    .and_then(|_| entry.file_name().to_str().map(ToString::to_string))
+            }));
+        }
+        ids.sort();
+        ids.dedup();
+        ids
+    }
+
+    fn parse_antigravity_transcript_messages(
+        &self,
+        conversation_id: &str,
+    ) -> Vec<UnifiedMessage> {
+        let mut messages = Vec::new();
+        for path in self.antigravity_transcript_files_for(conversation_id) {
+            let Ok(raw) = fs::read_to_string(path) else {
+                continue;
+            };
+            for line in raw.lines() {
+                let trimmed = line.trim();
+                if trimmed.is_empty() {
+                    continue;
+                }
+                let Ok(value) = serde_json::from_str::<Value>(trimmed) else {
+                    continue;
+                };
+                if value
+                    .get("status")
+                    .and_then(|v| v.as_str())
+                    .is_some_and(|status| !status.eq_ignore_ascii_case("done"))
+                {
+                    continue;
+                }
+                let timestamp = Self::parse_timestamp(value.get("created_at"))
+                    .unwrap_or_else(Utc::now);
+                let id = value
+                    .get("step_index")
+                    .and_then(|v| v.as_i64())
+                    .map(|idx| format!("{conversation_id}-{idx}"))
+                    .unwrap_or_else(|| format!("{conversation_id}-{}", messages.len()));
+                let source = value
+                    .get("source")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_ascii_lowercase();
+                let kind = value
+                    .get("type")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_ascii_lowercase();
+                let content = value
+                    .get("content")
+                    .and_then(Self::extract_text)
+                    .unwrap_or_default();
+
+                if source.contains("user") || kind == "user_input" {
+                    let text = content.trim();
+                    if text.is_empty() {
+                        continue;
+                    }
+                    messages.push(UnifiedMessage {
+                        id,
+                        role: MessageRole::User,
+                        content: vec![ContentBlock::Text {
+                            text: text.to_string(),
+                        }],
+                        timestamp,
+                        usage: None,
+                        duration_ms: None,
+                        model: None,
+                        completed_at: Some(timestamp),
+                    });
+                    continue;
+                }
+
+                if source == "model" || kind.ends_with("_response") {
+                    let mut blocks = Vec::new();
+                    if let Some(thinking) = value
+                        .get("thinking")
+                        .and_then(Self::extract_text)
+                        .map(|s| s.trim().to_string())
+                        .filter(|s| !s.is_empty())
+                    {
+                        blocks.push(ContentBlock::Thinking { text: thinking });
+                    }
+                    if !content.trim().is_empty() {
+                        blocks.push(ContentBlock::Text {
+                            text: content.trim().to_string(),
+                        });
+                    }
+                    if blocks.is_empty() {
+                        continue;
+                    }
+                    messages.push(UnifiedMessage {
+                        id,
+                        role: MessageRole::Assistant,
+                        content: blocks,
+                        timestamp,
+                        usage: None,
+                        duration_ms: None,
+                        model: None,
+                        completed_at: Some(timestamp),
+                    });
+                }
+            }
+        }
+        messages.sort_by_key(|m| m.timestamp);
+        messages
+    }
+
+    fn parse_antigravity_conversation(
+        &self,
+        conversation_id: &str,
+        history: Option<&AntigravityHistoryEntry>,
+    ) -> Option<AntigravityParsedConversation> {
+        let mut messages = self.parse_antigravity_transcript_messages(conversation_id);
+        if messages.is_empty() {
+            let entry = history?;
+            let text = entry.display.as_ref()?.trim();
+            if text.is_empty() {
+                return None;
+            }
+            let timestamp = entry.timestamp.unwrap_or_else(Utc::now);
+            messages.push(UnifiedMessage {
+                id: format!("{}-history", entry.id),
+                role: MessageRole::User,
+                content: vec![ContentBlock::Text {
+                    text: text.to_string(),
+                }],
+                timestamp,
+                usage: None,
+                duration_ms: None,
+                model: None,
+                completed_at: Some(timestamp),
+            });
+        }
+
+        let started_at = messages
+            .first()
+            .map(|m| m.timestamp)
+            .or_else(|| history.and_then(|h| h.timestamp))
+            .unwrap_or_else(Utc::now);
+        let ended_at = messages
+            .last()
+            .map(|m| m.completed_at.unwrap_or(m.timestamp))
+            .or_else(|| history.and_then(|h| h.timestamp));
+        let title = messages
+            .iter()
+            .filter(|m| matches!(m.role, MessageRole::User))
+            .find_map(|m| {
+                m.content.iter().find_map(|block| match block {
+                    ContentBlock::Text { text } => Some(title_from_user_text(text)),
+                    _ => None,
+                })
+            })
+            .or_else(|| history.and_then(|h| h.display.as_ref().map(|s| title_from_user_text(s))));
+        let folder_path = history.and_then(|h| h.workspace.clone());
+        let folder_name = folder_path.as_ref().map(|p| folder_name_from_path(p));
+
+        let summary = ConversationSummary {
+            id: conversation_id.to_string(),
+            agent_type: AgentType::Gemini,
+            folder_path,
+            folder_name,
+            title,
+            started_at,
+            ended_at,
+            message_count: messages.len() as u32,
+            model: None,
+            git_branch: None,
+            parent_id: None,
+            parent_tool_use_id: None,
+            delegation_call_id: None,
+        };
+
+        Some(AntigravityParsedConversation { summary, messages })
     }
 
     fn result_preview(result: Option<&Value>) -> Option<String> {
@@ -766,6 +1059,16 @@ impl AgentParser for GeminiParser {
             }
         }
 
+        let antigravity_history = self.antigravity_history_entries();
+        for conversation_id in self.antigravity_conversation_ids() {
+            if let Some(parsed) = self.parse_antigravity_conversation(
+                &conversation_id,
+                antigravity_history.get(&conversation_id),
+            ) {
+                conversations.push(parsed.summary);
+            }
+        }
+
         conversations.sort_by_key(|b| std::cmp::Reverse(b.started_at));
         Ok(conversations)
     }
@@ -789,6 +1092,25 @@ impl AgentParser for GeminiParser {
             }
 
             return self.parse_conversation_detail(&chat_file, &value, conversation_id);
+        }
+
+        let antigravity_history = self.antigravity_history_entries();
+        if let Some(parsed) =
+            self.parse_antigravity_conversation(conversation_id, antigravity_history.get(conversation_id))
+        {
+            let mut turns = group_into_turns(parsed.messages);
+            super::relocate_orphaned_tool_results(&mut turns);
+            super::structurize_read_tool_output(&mut turns);
+            super::resolve_patch_line_numbers(&mut turns, parsed.summary.folder_path.as_deref());
+            let session_stats = super::compute_session_stats(&turns);
+            let mut summary = parsed.summary;
+            summary.message_count = turns.len() as u32;
+            return Ok(ConversationDetail {
+                summary,
+                turns,
+                session_stats,
+                transcript_watermark: None,
+            });
         }
 
         Err(ParseError::ConversationNotFound(
@@ -1110,6 +1432,87 @@ mod tests {
         )));
         let stats = detail.session_stats.expect("session stats");
         assert_eq!(stats.total_tokens, Some(33));
+
+        let _ = fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn parses_antigravity_history_and_brain_transcript() {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time ok")
+            .as_nanos();
+        let base: PathBuf = env::temp_dir().join(format!("codeg-antigravity-test-{nanos}"));
+        let ag_dir = base.join("antigravity-cli");
+        let conversation_id = "ag-conv-1";
+        fs::create_dir_all(&ag_dir).expect("create antigravity dir");
+        fs::write(
+            ag_dir.join("history.jsonl"),
+            format!(
+                "{}\n",
+                serde_json::json!({
+                    "display": "Plan migration",
+                    "timestamp": 1_780_132_452_000_i64,
+                    "workspace": "/tmp/ag-work",
+                    "conversationId": conversation_id
+                })
+            ),
+        )
+        .expect("write antigravity history");
+
+        let logs_dir = ag_dir
+            .join("brain")
+            .join(conversation_id)
+            .join(".system_generated")
+            .join("logs");
+        fs::create_dir_all(&logs_dir).expect("create transcript logs");
+        let transcript = [
+            serde_json::json!({
+                "step_index": 0,
+                "source": "USER_EXPLICIT",
+                "type": "USER_INPUT",
+                "status": "DONE",
+                "created_at": "2026-06-30T08:44:12Z",
+                "content": "Plan migration"
+            }),
+            serde_json::json!({
+                "step_index": 1,
+                "source": "MODEL",
+                "type": "PLANNER_RESPONSE",
+                "status": "DONE",
+                "created_at": "2026-06-30T08:44:15Z",
+                "thinking": "Check registry first",
+                "content": "Use agy bridge"
+            }),
+        ]
+        .into_iter()
+        .map(|v| v.to_string())
+        .collect::<Vec<_>>()
+        .join("\n");
+        fs::write(logs_dir.join("transcript-1.jsonl"), format!("{transcript}\n"))
+            .expect("write transcript");
+
+        let parser = GeminiParser::with_base_dir(base.clone());
+        let summaries = parser.list_conversations().expect("list conversations");
+        assert_eq!(summaries.len(), 1);
+        assert_eq!(summaries[0].id, conversation_id);
+        assert_eq!(summaries[0].title.as_deref(), Some("Plan migration"));
+        assert_eq!(summaries[0].folder_path.as_deref(), Some("/tmp/ag-work"));
+
+        let detail = parser
+            .get_conversation(conversation_id)
+            .expect("get conversation");
+        assert_eq!(detail.turns.len(), 2);
+        assert!(matches!(detail.turns[0].role, TurnRole::User));
+        assert!(matches!(detail.turns[1].role, TurnRole::Assistant));
+        assert!(detail.turns[1]
+            .blocks
+            .iter()
+            .any(|block| matches!(block, ContentBlock::Thinking { text } if text == "Check registry first")));
+        assert!(detail.turns[1]
+            .blocks
+            .iter()
+            .any(|block| matches!(block, ContentBlock::Text { text } if text == "Use agy bridge")));
 
         let _ = fs::remove_dir_all(base);
     }

@@ -671,23 +671,23 @@
       "loginSaveFailed": "登录成功但配置保存失败"
     },
     "gemini": {
-      "authConfig": "Gemini 认证配置",
-      "authConfigDescription": "对齐 Gemini CLI 认证文档，支持自定义、Google 登录、Gemini API Key、Vertex AI（ADC / 服务账号 / API Key）。",
-      "authMode": "认证方式",
-      "selectAuthMode": "选择认证方式",
-      "viewAuthDoc": "查看认证文档",
+      "authConfig": "Antigravity ??",
+      "authConfigDescription": "???? agy ???? Antigravity CLI????????????? print ???",
+      "authMode": "????",
+      "selectAuthMode": "??????",
+      "viewAuthDoc": "?? Antigravity ??",
       "mode": {
-        "custom": "自定义接口",
-        "loginGoogle": "Google 登录（OAuth）",
-        "vertexServiceAccount": "Vertex AI（服务账号）"
+        "custom": "???????",
+        "loginGoogle": "?? agy ????",
+        "vertexServiceAccount": "?? agy ??"
       },
       "hint": {
-        "custom": "填写 API URL、API Key 和 Model，分别映射到 GOOGLE_GEMINI_BASE_URL / GEMINI_API_KEY / GEMINI_MODEL。",
-        "loginGoogle": "首次在终端运行 gemini 并完成 Google 登录；无需填写 API Key。",
-        "geminiApiKey": "使用 Gemini API 时填写 GEMINI_API_KEY。",
-        "vertexAdc": "使用 gcloud ADC，建议填写 GOOGLE_CLOUD_PROJECT 与 GOOGLE_CLOUD_LOCATION。",
-        "vertexServiceAccount": "服务账号 JSON 路径写入 GOOGLE_APPLICATION_CREDENTIALS。",
-        "vertexApiKey": "使用 Vertex AI API key 时填写 GOOGLE_API_KEY。"
+        "custom": "?? ANTIGRAVITY_MODEL?ANTIGRAVITY_PROJECT?ANTIGRAVITY_CONVERSATION ? ANTIGRAVITY_PRINT_TIMEOUT?",
+        "loginGoogle": "??????? agy ????????",
+        "geminiApiKey": "Antigravity CLI ?????? API Key ???",
+        "vertexAdc": "Antigravity CLI ????????????",
+        "vertexServiceAccount": "Antigravity CLI ?????????????",
+        "vertexApiKey": "Antigravity CLI ?????? API Key ???"
       }
     },
     "openCode": {

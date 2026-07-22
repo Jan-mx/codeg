@@ -71,7 +71,7 @@ pub fn external_transcript_sources() -> Vec<ExternalSource> {
             agent: "gemini",
             root: gemini::resolve_gemini_base_dir(),
             is_file: false,
-            include_top: Some(&["tmp", "history", "projects.json"]),
+            include_top: Some(&["tmp", "history", "projects.json", "antigravity-cli"]),
         },
         ExternalSource {
             agent: "cline",

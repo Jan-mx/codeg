@@ -604,6 +604,9 @@ async fn build_agent(
                 })
                 .map_err(|e| AcpError::SpawnFailed(e.to_string()))
         }
+        AgentDistribution::SystemCommand { .. } => Err(AcpError::protocol(
+            "system command agents must use their dedicated bridge",
+        )),
     }?;
 
     // Run the agent subprocess in the session's working directory rather than
@@ -686,6 +689,22 @@ pub async fn spawn_agent_connection(
     // agree. Computed here because `working_dir` is moved into run_connection
     // below.
     let launch_cwd = resolve_working_dir(working_dir.as_deref());
+    if agent_type == AgentType::Gemini {
+        return spawn_antigravity_bridge_connection(
+            connection_id,
+            working_dir,
+            session_id,
+            runtime_env,
+            preferred_config_values,
+            owner_window_label,
+            emitter,
+            connections,
+            session_state,
+            session_started_rx,
+            launch_cwd,
+        )
+        .await;
+    }
     let agent = build_agent(agent_type, &runtime_env, &launch_cwd).await?;
 
     // Forward only the codeg git credential helper keys into the terminal
@@ -827,6 +846,485 @@ pub async fn spawn_agent_connection(
     });
 
     Ok(session_started_rx)
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn spawn_antigravity_bridge_connection(
+    connection_id: String,
+    working_dir: Option<String>,
+    session_id: Option<String>,
+    runtime_env: BTreeMap<String, String>,
+    preferred_config_values: BTreeMap<String, String>,
+    owner_window_label: String,
+    emitter: EventEmitter,
+    connections: Arc<tokio::sync::Mutex<HashMap<String, AgentConnection>>>,
+    session_state: Arc<RwLock<SessionState>>,
+    session_started_rx: tokio::sync::oneshot::Receiver<()>,
+    launch_cwd: PathBuf,
+) -> Result<tokio::sync::oneshot::Receiver<()>, AcpError> {
+    let meta = registry::get_agent_meta(AgentType::Gemini);
+    let agy_path = match meta.distribution {
+        AgentDistribution::SystemCommand { cmd, .. } => {
+            crate::commands::acp::resolve_command_on_path(cmd).ok_or_else(|| {
+                AcpError::SdkNotInstalled(format!(
+                    "{} is not installed. Please install `{cmd}` and make sure it is on PATH.",
+                    meta.name
+                ))
+            })?
+        }
+        _ => {
+            return Err(AcpError::protocol(
+                "Antigravity bridge requires a system command distribution",
+            ));
+        }
+    };
+
+    let options = crate::acp::antigravity_bridge::AntigravityPrintOptions::from_runtime_env(
+        agy_path,
+        launch_cwd,
+        &runtime_env,
+    );
+    let (cmd_tx, cmd_rx) = mpsc::channel::<ConnectionCommand>(32);
+    let config_fingerprint =
+        crate::commands::acp::fingerprint_config(AgentType::Gemini, &runtime_env);
+
+    connections.lock().await.insert(
+        connection_id.clone(),
+        AgentConnection {
+            id: connection_id.clone(),
+            agent_type: AgentType::Gemini,
+            status: ConnectionStatus::Connecting,
+            owner_window_label,
+            cmd_tx,
+            state: Arc::clone(&session_state),
+            emitter: emitter.clone(),
+            prompt_lock: Arc::new(tokio::sync::Mutex::new(())),
+            last_observed_fingerprint: config_fingerprint.clone(),
+            config_fingerprint,
+        },
+    );
+
+    let cleanup_connections = connections.clone();
+    let cleanup_connection_id = connection_id.clone();
+    let state_clone = Arc::clone(&session_state);
+    let emitter_clone = emitter.clone();
+    tokio::spawn(async move {
+        let _cleanup = ConnectionCleanupGuard {
+            connections: cleanup_connections,
+            connection_id: cleanup_connection_id,
+        };
+        run_antigravity_bridge_loop(
+            connection_id,
+            working_dir,
+            session_id,
+            cmd_rx,
+            emitter_clone.clone(),
+            Arc::clone(&state_clone),
+            options,
+            preferred_config_values,
+        )
+        .await;
+        emit_with_state(
+            &state_clone,
+            &emitter_clone,
+            AcpEvent::StatusChanged {
+                status: ConnectionStatus::Disconnected,
+            },
+        )
+        .await;
+    });
+
+    Ok(session_started_rx)
+}
+
+async fn emit_antigravity_unsupported(
+    state: &Arc<RwLock<SessionState>>,
+    emitter: &EventEmitter,
+    message: impl Into<String>,
+) {
+    emit_with_state(
+        state,
+        emitter,
+        AcpEvent::Error {
+            message: message.into(),
+            agent_type: AgentType::Gemini.to_string(),
+            code: None,
+            terminal: false,
+        },
+    )
+    .await;
+}
+
+async fn emit_antigravity_turn_complete(
+    state: &Arc<RwLock<SessionState>>,
+    emitter: &EventEmitter,
+    session_id: &str,
+    stop_reason: &str,
+) {
+    emit_with_state(
+        state,
+        emitter,
+        AcpEvent::TurnComplete {
+            session_id: session_id.to_string(),
+            stop_reason: stop_reason.to_string(),
+            agent_type: registry::registry_id_for(AgentType::Gemini).to_string(),
+        },
+    )
+    .await;
+}
+
+const ANTIGRAVITY_MODEL_CONFIG_ID: &str = "model";
+const ANTIGRAVITY_AUTO_MODEL_ID: &str = "__auto__";
+
+fn antigravity_model_config_option(
+    options: &crate::acp::antigravity_bridge::AntigravityPrintOptions,
+    available_models: &[String],
+) -> SessionConfigOptionInfo {
+    let mut models = vec![SessionConfigSelectOptionInfo {
+        value: ANTIGRAVITY_AUTO_MODEL_ID.to_string(),
+        name: "Auto".to_string(),
+        description: Some("Use the Antigravity CLI default model".to_string()),
+    }];
+    models.extend(
+        available_models
+            .iter()
+            .map(|model| SessionConfigSelectOptionInfo {
+                value: model.clone(),
+                name: model.clone(),
+                description: None,
+            }),
+    );
+
+    if let Some(current) = options.model.as_ref() {
+        if !models.iter().any(|model| model.value == *current) {
+            models.push(SessionConfigSelectOptionInfo {
+                value: current.clone(),
+                name: current.clone(),
+                description: Some("Custom model from Antigravity settings".to_string()),
+            });
+        }
+    }
+
+    SessionConfigOptionInfo {
+        id: ANTIGRAVITY_MODEL_CONFIG_ID.to_string(),
+        name: "Model".to_string(),
+        description: Some("Choose the model for future Antigravity turns".to_string()),
+        category: Some("model".to_string()),
+        kind: SessionConfigKindInfo::Select(SessionConfigSelectInfo {
+            current_value: options
+                .model
+                .clone()
+                .unwrap_or_else(|| ANTIGRAVITY_AUTO_MODEL_ID.to_string()),
+            options: models,
+            groups: Vec::new(),
+        }),
+    }
+}
+
+fn set_antigravity_model(
+    options: &mut crate::acp::antigravity_bridge::AntigravityPrintOptions,
+    available_models: &[String],
+    config_id: &str,
+    value_id: &str,
+) -> Result<(), String> {
+    if config_id != ANTIGRAVITY_MODEL_CONFIG_ID {
+        return Err(format!(
+            "Antigravity bridge does not support config option '{config_id}'"
+        ));
+    }
+
+    if value_id == ANTIGRAVITY_AUTO_MODEL_ID {
+        options.model = None;
+        return Ok(());
+    }
+
+    let value_id = value_id.trim();
+    let is_current_custom = options.model.as_deref() == Some(value_id);
+    if value_id.is_empty()
+        || (!is_current_custom && !available_models.iter().any(|model| model == value_id))
+    {
+        return Err(format!("Unknown Antigravity model '{value_id}'"));
+    }
+
+    options.model = Some(value_id.to_string());
+    Ok(())
+}
+
+async fn emit_antigravity_model_options(
+    state: &Arc<RwLock<SessionState>>,
+    emitter: &EventEmitter,
+    options: &crate::acp::antigravity_bridge::AntigravityPrintOptions,
+    available_models: &[String],
+) {
+    emit_with_state(
+        state,
+        emitter,
+        AcpEvent::SessionConfigOptions {
+            config_options: vec![antigravity_model_config_option(options, available_models)],
+        },
+    )
+    .await;
+}
+
+async fn run_antigravity_bridge_loop(
+    _connection_id: String,
+    _working_dir: Option<String>,
+    session_id: Option<String>,
+    mut cmd_rx: mpsc::Receiver<ConnectionCommand>,
+    emitter: EventEmitter,
+    state: Arc<RwLock<SessionState>>,
+    mut options: crate::acp::antigravity_bridge::AntigravityPrintOptions,
+    preferred_config_values: BTreeMap<String, String>,
+) {
+    let external_session_id =
+        session_id.unwrap_or_else(|| format!("antigravity-{}", uuid::Uuid::new_v4()));
+    let fallback_models = crate::acp::antigravity_bridge::fallback_antigravity_models();
+    let mut initial_options = options.clone();
+    if let Some(preferred_model) = preferred_config_values.get(ANTIGRAVITY_MODEL_CONFIG_ID) {
+        // Best-effort preview for the connection snapshot. The authoritative
+        // validation runs again against `agy models` below, using the untouched
+        // launch options so a fallback-only value cannot become a custom model.
+        let _ = set_antigravity_model(
+            &mut initial_options,
+            &fallback_models,
+            ANTIGRAVITY_MODEL_CONFIG_ID,
+            preferred_model,
+        );
+    }
+    emit_antigravity_model_options(&state, &emitter, &initial_options, &fallback_models).await;
+    emit_with_state(
+        &state,
+        &emitter,
+        AcpEvent::SessionStarted {
+            session_id: external_session_id.clone(),
+        },
+    )
+    .await;
+
+    let available_models =
+        crate::acp::antigravity_bridge::available_antigravity_models(&options).await;
+    if let Some(preferred_model) = preferred_config_values.get(ANTIGRAVITY_MODEL_CONFIG_ID) {
+        if let Err(err) = set_antigravity_model(
+            &mut options,
+            &available_models,
+            ANTIGRAVITY_MODEL_CONFIG_ID,
+            preferred_model,
+        ) {
+            tracing::warn!(
+                "[ACP][Antigravity] ignoring saved model preference '{preferred_model}': {err}"
+            );
+        }
+    }
+
+    emit_with_state(
+        &state,
+        &emitter,
+        AcpEvent::PromptCapabilities {
+            prompt_capabilities: PromptCapabilitiesInfo {
+                image: false,
+                audio: false,
+                embedded_context: false,
+            },
+        },
+    )
+    .await;
+    emit_with_state(
+        &state,
+        &emitter,
+        AcpEvent::ForkSupported { supported: false },
+    )
+    .await;
+    emit_antigravity_model_options(&state, &emitter, &options, &available_models).await;
+    emit_with_state(&state, &emitter, AcpEvent::SelectorsReady).await;
+    emit_with_state(
+        &state,
+        &emitter,
+        AcpEvent::StatusChanged {
+            status: ConnectionStatus::Connected,
+        },
+    )
+    .await;
+
+    while let Some(cmd) = cmd_rx.recv().await {
+        match cmd {
+            ConnectionCommand::Prompt {
+                blocks,
+                user_message,
+            } => {
+                let prompt = crate::acp::antigravity_bridge::prompt_text_from_blocks(&blocks);
+                emit_with_state(
+                    &state,
+                    &emitter,
+                    AcpEvent::StatusChanged {
+                        status: ConnectionStatus::Prompting,
+                    },
+                )
+                .await;
+                if let Some((message_id, blocks)) = user_message {
+                    emit_with_state(
+                        &state,
+                        &emitter,
+                        AcpEvent::UserMessage { message_id, blocks },
+                    )
+                    .await;
+                }
+
+                if prompt.trim().is_empty() {
+                    emit_antigravity_unsupported(&state, &emitter, "Prompt must not be empty")
+                        .await;
+                    emit_antigravity_turn_complete(&state, &emitter, &external_session_id, "empty")
+                        .await;
+                    continue;
+                }
+
+                // A model change received while this turn is running applies to
+                // the next prompt. Clone the launch options so the in-flight
+                // subprocess keeps a stable model while `options` stays mutable.
+                let turn_options = options.clone();
+                let mut bridge = Box::pin(crate::acp::antigravity_bridge::run_antigravity_print(
+                    &turn_options,
+                    &prompt,
+                ));
+                let mut disconnect_after_turn = false;
+                loop {
+                    tokio::select! {
+                        result = &mut bridge => {
+                            match result {
+                                Ok(text) => {
+                                    emit_with_state(&state, &emitter, AcpEvent::ContentDelta { text }).await;
+                                    emit_antigravity_turn_complete(
+                                        &state,
+                                        &emitter,
+                                        &external_session_id,
+                                        "end_turn",
+                                    ).await;
+                                }
+                                Err(err) => {
+                                    emit_with_state(
+                                        &state,
+                                        &emitter,
+                                        AcpEvent::Error {
+                                            message: err.to_string(),
+                                            agent_type: AgentType::Gemini.to_string(),
+                                            code: err.code().map(str::to_string),
+                                            terminal: false,
+                                        },
+                                    ).await;
+                                    emit_antigravity_turn_complete(
+                                        &state,
+                                        &emitter,
+                                        &external_session_id,
+                                        "refusal",
+                                    ).await;
+                                }
+                            }
+                            break;
+                        }
+                        queued = cmd_rx.recv() => {
+                            match queued {
+                                Some(ConnectionCommand::Cancel) => {
+                                    emit_antigravity_turn_complete(
+                                        &state,
+                                        &emitter,
+                                        &external_session_id,
+                                        "cancelled",
+                                    ).await;
+                                    break;
+                                }
+                                Some(ConnectionCommand::Disconnect) | None => {
+                                    emit_antigravity_turn_complete(
+                                        &state,
+                                        &emitter,
+                                        &external_session_id,
+                                        "cancelled",
+                                    ).await;
+                                    disconnect_after_turn = true;
+                                    break;
+                                }
+                                Some(ConnectionCommand::RespondPermission { .. }) => {
+                                    emit_antigravity_unsupported(
+                                        &state,
+                                        &emitter,
+                                        "Antigravity bridge does not support Codeg permission requests",
+                                    ).await;
+                                }
+                                Some(ConnectionCommand::SetConfigOption {
+                                    config_id,
+                                    value_id,
+                                }) => {
+                                    match set_antigravity_model(
+                                        &mut options,
+                                        &available_models,
+                                        &config_id,
+                                        &value_id,
+                                    ) {
+                                        Ok(()) => {
+                                            emit_antigravity_model_options(
+                                                &state,
+                                                &emitter,
+                                                &options,
+                                                &available_models,
+                                            ).await;
+                                        }
+                                        Err(err) => {
+                                            emit_antigravity_unsupported(&state, &emitter, err).await;
+                                        }
+                                    }
+                                }
+                                Some(ConnectionCommand::SetMode { .. })
+                                | Some(ConnectionCommand::Fork { .. })
+                                | Some(ConnectionCommand::Prompt { .. }) => {}
+                            }
+                        }
+                    }
+                }
+                if disconnect_after_turn {
+                    break;
+                }
+            }
+            ConnectionCommand::SetMode { .. } => {
+                emit_antigravity_unsupported(
+                    &state,
+                    &emitter,
+                    "Antigravity bridge does not expose ACP session modes",
+                )
+                .await;
+            }
+            ConnectionCommand::SetConfigOption {
+                config_id,
+                value_id,
+            } => {
+                match set_antigravity_model(&mut options, &available_models, &config_id, &value_id)
+                {
+                    Ok(()) => {
+                        emit_antigravity_model_options(
+                            &state,
+                            &emitter,
+                            &options,
+                            &available_models,
+                        )
+                        .await;
+                    }
+                    Err(err) => emit_antigravity_unsupported(&state, &emitter, err).await,
+                }
+            }
+            ConnectionCommand::Cancel => {}
+            ConnectionCommand::RespondPermission { .. } => {
+                emit_antigravity_unsupported(
+                    &state,
+                    &emitter,
+                    "Antigravity bridge does not support Codeg permission requests",
+                )
+                .await;
+            }
+            ConnectionCommand::Fork { reply } => {
+                let _ = reply.send(Err(AcpError::protocol(
+                    "Antigravity bridge does not support session fork",
+                )));
+            }
+            ConnectionCommand::Disconnect => break,
+        }
+    }
 }
 
 /// Shared state for pending permission responders.
@@ -5571,6 +6069,200 @@ async fn emit_conversation_update(
 mod tests {
     use super::*;
     use sacp::schema::Diff;
+
+    fn antigravity_options(
+        model: Option<&str>,
+    ) -> crate::acp::antigravity_bridge::AntigravityPrintOptions {
+        crate::acp::antigravity_bridge::AntigravityPrintOptions {
+            command: PathBuf::from("agy"),
+            workspace: PathBuf::from("."),
+            model: model.map(str::to_string),
+            project: None,
+            conversation: None,
+            print_timeout: "5m0s".to_string(),
+            child_timeout: std::time::Duration::from_secs(330),
+            env: BTreeMap::new(),
+        }
+    }
+
+    #[test]
+    fn antigravity_model_option_projects_catalog_and_auto_default() {
+        let options = antigravity_options(None);
+        let catalog = vec![
+            "Gemini 3.5 Flash (High)".to_string(),
+            "Gemini 3.1 Pro (High)".to_string(),
+        ];
+
+        let option = antigravity_model_config_option(&options, &catalog);
+
+        assert_eq!(option.id, ANTIGRAVITY_MODEL_CONFIG_ID);
+        assert_eq!(option.category.as_deref(), Some("model"));
+        let SessionConfigKindInfo::Select(select) = option.kind;
+        assert_eq!(select.current_value, ANTIGRAVITY_AUTO_MODEL_ID);
+        assert_eq!(select.options[0].value, ANTIGRAVITY_AUTO_MODEL_ID);
+        assert_eq!(select.options[0].name, "Auto");
+        assert_eq!(select.options[1].value, catalog[0]);
+        assert_eq!(select.options[2].value, catalog[1]);
+    }
+
+    #[test]
+    fn antigravity_model_option_keeps_custom_configured_model() {
+        let options = antigravity_options(Some("Custom Preview Model"));
+        let option = antigravity_model_config_option(&options, &[]);
+        let SessionConfigKindInfo::Select(select) = option.kind;
+
+        assert_eq!(select.current_value, "Custom Preview Model");
+        assert!(select
+            .options
+            .iter()
+            .any(|item| item.value == "Custom Preview Model"));
+    }
+
+    #[test]
+    fn antigravity_model_selection_updates_and_clears_launch_model() {
+        let mut options = antigravity_options(None);
+        let catalog = vec!["Gemini 3.1 Pro (High)".to_string()];
+
+        set_antigravity_model(
+            &mut options,
+            &catalog,
+            ANTIGRAVITY_MODEL_CONFIG_ID,
+            "Gemini 3.1 Pro (High)",
+        )
+        .expect("catalog model should be accepted");
+        assert_eq!(options.model.as_deref(), Some("Gemini 3.1 Pro (High)"));
+
+        set_antigravity_model(
+            &mut options,
+            &catalog,
+            ANTIGRAVITY_MODEL_CONFIG_ID,
+            ANTIGRAVITY_AUTO_MODEL_ID,
+        )
+        .expect("auto should clear the explicit model");
+        assert_eq!(options.model, None);
+    }
+
+    #[test]
+    fn antigravity_model_selection_rejects_stale_gemini_preference() {
+        let mut options = antigravity_options(None);
+        let catalog = vec!["Gemini 3.1 Pro (High)".to_string()];
+
+        let error = set_antigravity_model(
+            &mut options,
+            &catalog,
+            ANTIGRAVITY_MODEL_CONFIG_ID,
+            "gemini-2.5-pro",
+        )
+        .expect_err("official Gemini CLI ids must not be forwarded to agy");
+
+        assert!(error.contains("Unknown Antigravity model"));
+        assert_eq!(options.model, None);
+    }
+
+    #[test]
+    fn antigravity_saved_model_revalidates_against_discovered_catalog() {
+        let base_options = antigravity_options(None);
+        let fallback = vec!["Retired Preview Model".to_string()];
+        let discovered = vec!["Newly Discovered Model".to_string()];
+
+        let mut preview = base_options.clone();
+        assert!(set_antigravity_model(
+            &mut preview,
+            &fallback,
+            ANTIGRAVITY_MODEL_CONFIG_ID,
+            "Newly Discovered Model",
+        )
+        .is_err());
+
+        let mut launch = base_options.clone();
+        set_antigravity_model(
+            &mut launch,
+            &discovered,
+            ANTIGRAVITY_MODEL_CONFIG_ID,
+            "Newly Discovered Model",
+        )
+        .expect("a model added by the live catalog should become valid");
+        assert_eq!(launch.model.as_deref(), Some("Newly Discovered Model"));
+
+        let mut retired_preview = base_options.clone();
+        set_antigravity_model(
+            &mut retired_preview,
+            &fallback,
+            ANTIGRAVITY_MODEL_CONFIG_ID,
+            "Retired Preview Model",
+        )
+        .expect("the fallback can render a saved preview");
+        let mut retired_launch = base_options;
+        assert!(set_antigravity_model(
+            &mut retired_launch,
+            &discovered,
+            ANTIGRAVITY_MODEL_CONFIG_ID,
+            "Retired Preview Model",
+        )
+        .is_err());
+        assert_eq!(retired_launch.model, None);
+    }
+
+    #[tokio::test]
+    async fn antigravity_session_starts_with_model_config_in_snapshot() {
+        let mut initial_state = SessionState::new(
+            "antigravity-test".to_string(),
+            AgentType::Gemini,
+            Some(PathBuf::from(".")),
+            "test-window".to_string(),
+            None,
+        );
+        let session_started = initial_state.install_session_started_signal();
+        let state = Arc::new(RwLock::new(initial_state));
+        let (cmd_tx, cmd_rx) = mpsc::channel(4);
+        let preferred = "Gemini 3.1 Pro (High)";
+        let preferred_config_values = BTreeMap::from([(
+            ANTIGRAVITY_MODEL_CONFIG_ID.to_string(),
+            preferred.to_string(),
+        )]);
+        let mut options = antigravity_options(None);
+        options.command = PathBuf::from("missing-agy-for-model-snapshot-test");
+
+        let task = tokio::spawn(run_antigravity_bridge_loop(
+            "antigravity-test".to_string(),
+            Some(".".to_string()),
+            None,
+            cmd_rx,
+            EventEmitter::Noop,
+            Arc::clone(&state),
+            options,
+            preferred_config_values,
+        ));
+
+        tokio::time::timeout(std::time::Duration::from_secs(1), session_started)
+            .await
+            .expect("session should start without waiting for model discovery")
+            .expect("session-start signal should remain connected");
+
+        let snapshot = state.read().await.to_snapshot();
+        let model = snapshot
+            .config_options
+            .expect("model config must exist when SessionStarted fires")
+            .into_iter()
+            .find(|option| option.id == ANTIGRAVITY_MODEL_CONFIG_ID)
+            .expect("model config option");
+        let SessionConfigKindInfo::Select(select) = model.kind;
+        assert_eq!(select.current_value, preferred);
+        assert_eq!(select.options[0].value, ANTIGRAVITY_AUTO_MODEL_ID);
+        assert!(select
+            .options
+            .iter()
+            .any(|option| option.value == preferred));
+
+        cmd_tx
+            .send(ConnectionCommand::Disconnect)
+            .await
+            .expect("disconnect command");
+        tokio::time::timeout(std::time::Duration::from_secs(1), task)
+            .await
+            .expect("bridge loop should stop")
+            .expect("bridge loop task should not panic");
+    }
 
     fn diff_content(path: &str, old: Option<&str>, new: &str) -> ToolCallContent {
         let mut d = Diff::new(path, new);

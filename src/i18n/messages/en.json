@@ -671,23 +671,23 @@
       "loginSaveFailed": "Login succeeded but failed to save config"
     },
     "gemini": {
-      "authConfig": "Gemini Auth Config",
-      "authConfigDescription": "Aligned with Gemini CLI authentication docs, supporting custom endpoint, Google login, Gemini API Key and Vertex AI (ADC / service account / API Key).",
-      "authMode": "Auth Mode",
-      "selectAuthMode": "Select auth mode",
-      "viewAuthDoc": "View auth docs",
+      "authConfig": "Antigravity Settings",
+      "authConfigDescription": "Runs Antigravity CLI through the local agy command. Configure only model, project, conversation, and print timeout.",
+      "authMode": "Runtime Mode",
+      "selectAuthMode": "Select runtime mode",
+      "viewAuthDoc": "View Antigravity docs",
       "mode": {
-        "custom": "Custom Endpoint",
-        "loginGoogle": "Google Login (OAuth)",
-        "vertexServiceAccount": "Vertex AI (Service Account)"
+        "custom": "Custom runtime options",
+        "loginGoogle": "Local agy login status",
+        "vertexServiceAccount": "Local agy configuration"
       },
       "hint": {
-        "custom": "Fill API URL, API Key and Model, mapped to GOOGLE_GEMINI_BASE_URL / GEMINI_API_KEY / GEMINI_MODEL.",
-        "loginGoogle": "Run gemini in terminal and complete Google login first; API key is not required.",
-        "geminiApiKey": "Fill GEMINI_API_KEY when using Gemini API.",
-        "vertexAdc": "Use gcloud ADC; GOOGLE_CLOUD_PROJECT and GOOGLE_CLOUD_LOCATION are recommended.",
-        "vertexServiceAccount": "Set service account JSON path to GOOGLE_APPLICATION_CREDENTIALS.",
-        "vertexApiKey": "Fill GOOGLE_API_KEY when using Vertex AI API key."
+        "custom": "Set ANTIGRAVITY_MODEL, ANTIGRAVITY_PROJECT, ANTIGRAVITY_CONVERSATION, and ANTIGRAVITY_PRINT_TIMEOUT.",
+        "loginGoogle": "Confirm agy is authenticated and runnable from the terminal.",
+        "geminiApiKey": "Legacy API key fields are ignored by the Antigravity CLI slot.",
+        "vertexAdc": "Legacy cloud auth fields are ignored by the Antigravity CLI slot.",
+        "vertexServiceAccount": "Legacy service account fields are ignored by the Antigravity CLI slot.",
+        "vertexApiKey": "Legacy API key fields are ignored by the Antigravity CLI slot."
       }
     },
     "openCode": {

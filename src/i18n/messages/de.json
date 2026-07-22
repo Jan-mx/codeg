@@ -671,23 +671,23 @@
       "loginSaveFailed": "Anmeldung erfolgreich, aber Konfiguration konnte nicht gespeichert werden"
     },
     "gemini": {
-      "authConfig": "Gemini-Auth-Konfiguration",
-      "authConfigDescription": "Ausgerichtet an den Gemini CLI-Authentifizierungsdokumenten, mit Unterstützung für benutzerdefinierten Endpoint, Google-Login, Gemini API Key und Vertex AI (ADC / Servicekonto / API Key).",
-      "authMode": "Auth-Modus",
-      "selectAuthMode": "Auth-Modus auswählen",
-      "viewAuthDoc": "Auth-Dokumentation anzeigen",
+      "authConfig": "Antigravity Settings",
+      "authConfigDescription": "Runs Antigravity CLI through the local agy command. Configure only model, project, conversation, and print timeout.",
+      "authMode": "Runtime Mode",
+      "selectAuthMode": "Select runtime mode",
+      "viewAuthDoc": "View Antigravity docs",
       "mode": {
-        "custom": "Benutzerdefinierter Endpoint",
-        "loginGoogle": "Google-Login (OAuth)",
-        "vertexServiceAccount": "Vertex AI (Servicekonto)"
+        "custom": "Custom runtime options",
+        "loginGoogle": "Local agy login status",
+        "vertexServiceAccount": "Local agy configuration"
       },
       "hint": {
-        "custom": "API URL, API Key und Modell ausfüllen; wird auf GOOGLE_GEMINI_BASE_URL / GEMINI_API_KEY / GEMINI_MODEL abgebildet.",
-        "loginGoogle": "Gemini zuerst im Terminal ausführen und Google-Login abschließen; API key ist nicht erforderlich.",
-        "geminiApiKey": "Beim Verwenden der Gemini API GEMINI_API_KEY eintragen.",
-        "vertexAdc": "gcloud ADC verwenden; GOOGLE_CLOUD_PROJECT und GOOGLE_CLOUD_LOCATION werden empfohlen.",
-        "vertexServiceAccount": "Pfad zur Servicekonto-JSON in GOOGLE_APPLICATION_CREDENTIALS setzen.",
-        "vertexApiKey": "Beim Verwenden eines Vertex AI API Keys GOOGLE_API_KEY eintragen."
+        "custom": "Set ANTIGRAVITY_MODEL, ANTIGRAVITY_PROJECT, ANTIGRAVITY_CONVERSATION, and ANTIGRAVITY_PRINT_TIMEOUT.",
+        "loginGoogle": "Confirm agy is authenticated and runnable from the terminal.",
+        "geminiApiKey": "Legacy API key fields are ignored by the Antigravity CLI slot.",
+        "vertexAdc": "Legacy cloud auth fields are ignored by the Antigravity CLI slot.",
+        "vertexServiceAccount": "Legacy service account fields are ignored by the Antigravity CLI slot.",
+        "vertexApiKey": "Legacy API key fields are ignored by the Antigravity CLI slot."
       }
     },
     "openCode": {

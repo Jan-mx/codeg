@@ -296,6 +296,8 @@ const HYPERFRAMES_SKILL_PREFIX: &str = "hyperframes";
 
 /// Map a `skills` CLI `--agent` id (what the install command and the frontend
 /// speak) to codeg's internal `AgentType`, which drives skill-dir resolution.
+/// `gemini-cli` is retained here as the external skills CLI compatibility id;
+/// codeg displays and launches this slot as Antigravity.
 fn agent_type_for_skill_id(skill_agent: &str) -> Option<AgentType> {
     Some(match skill_agent {
         "claude-code" => AgentType::ClaudeCode,

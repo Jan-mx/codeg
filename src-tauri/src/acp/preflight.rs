@@ -70,6 +70,9 @@ pub async fn run_preflight(agent_type: AgentType) -> PreflightResult {
             system_cmd,
             ..
         } => check_uv_environment(*uv_required, *system_cmd).await,
+        AgentDistribution::SystemCommand { cmd, .. } => {
+            check_system_command_environment(cmd).await
+        }
     };
 
     let passed = checks
@@ -294,6 +297,62 @@ fn build_node_version_check(current_version: Option<&str>, required: &str) -> Ch
 /// Preflight for `Uvx` agents (Python ACP agents launched via `uvx`, e.g.
 /// Hermes). Passes when either the `uv` tool runner is resolvable, or — as a
 /// fallback — the agent's own CLI is already installed on PATH.
+async fn check_system_command_environment(cmd: &str) -> Vec<CheckItem> {
+    let Some(path) = crate::commands::acp::resolve_command_on_path(cmd) else {
+        return vec![CheckItem {
+            check_id: format!("{cmd}_available"),
+            label: cmd.to_string(),
+            status: CheckStatus::Fail,
+            message: format!("{cmd} is not installed or not in PATH"),
+            fixes: vec![],
+        }];
+    };
+
+    match crate::process::tokio_command(&path)
+        .arg("--version")
+        .output()
+        .await
+    {
+        Ok(output) if output.status.success() => {
+            let version = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            let message = if version.is_empty() {
+                format!("{cmd} available")
+            } else {
+                format!("{cmd} {version} available")
+            };
+            vec![CheckItem {
+                check_id: format!("{cmd}_available"),
+                label: cmd.to_string(),
+                status: CheckStatus::Pass,
+                message,
+                fixes: vec![],
+            }]
+        }
+        Ok(output) => {
+            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            let detail = if stderr.is_empty() {
+                "version check failed".to_string()
+            } else {
+                stderr
+            };
+            vec![CheckItem {
+                check_id: format!("{cmd}_available"),
+                label: cmd.to_string(),
+                status: CheckStatus::Fail,
+                message: format!("{cmd} is installed but unusable: {detail}"),
+                fixes: vec![],
+            }]
+        }
+        Err(err) => vec![CheckItem {
+            check_id: format!("{cmd}_available"),
+            label: cmd.to_string(),
+            status: CheckStatus::Fail,
+            message: format!("{cmd} version check failed: {err}"),
+            fixes: vec![],
+        }],
+    }
+}
+
 async fn check_uv_environment(
     uv_required: Option<&str>,
     system_cmd: Option<(&str, &[&str])>,

@@ -42,6 +42,13 @@ pub enum AgentDistribution {
         /// its official installer launch it without `uv`.
         system_cmd: Option<(&'static str, &'static [&'static str])>,
     },
+    /// Agents provided by a system command already installed on PATH. Codeg
+    /// does not install or upgrade these; it only verifies and launches them.
+    SystemCommand {
+        cmd: &'static str,
+        args: &'static [&'static str],
+        env: &'static [(&'static str, &'static str)],
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -70,6 +77,7 @@ impl AcpAgentMeta {
             AgentDistribution::Npx { version, .. }
             | AgentDistribution::Binary { version, .. }
             | AgentDistribution::Uvx { version, .. } => Some(*version),
+            AgentDistribution::SystemCommand { .. } => None,
         }
     }
 }
@@ -195,16 +203,13 @@ pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
         },
         AgentType::Gemini => AcpAgentMeta {
             agent_type,
-            supports_mcp: true,
-            name: "Gemini CLI",
-            description: "Google's official CLI for Gemini",
-            distribution: AgentDistribution::Npx {
-                version: "0.50.0",
-                package: "@google/gemini-cli@0.50.0",
-                cmd: "gemini",
-                args: &["--acp", "--skip-trust"],
+            supports_mcp: false,
+            name: "Antigravity CLI",
+            description: "Google Antigravity CLI via the local agy command",
+            distribution: AgentDistribution::SystemCommand {
+                cmd: "agy",
+                args: &[],
                 env: &[],
-                node_required: Some("20.0.0"),
             },
         },
         AgentType::OpenClaw => AcpAgentMeta {
@@ -478,6 +483,24 @@ mod tests {
         }
     }
 
+    fn assert_system_command(
+        agent_type: AgentType,
+        expected_cmd: &str,
+        expected_args: &[&str],
+    ) {
+        let meta = get_agent_meta(agent_type);
+        match meta.distribution {
+            AgentDistribution::SystemCommand { cmd, args, .. } => {
+                assert_eq!(cmd, expected_cmd);
+                assert_eq!(args, expected_args);
+                assert_eq!(meta.registry_version(), None);
+            }
+            other => {
+                panic!("expected system command distribution for {agent_type:?}, got {other:?}");
+            }
+        }
+    }
+
     #[test]
     fn registry_pins_current_acp_agent_versions() {
         assert_npx_version(
@@ -486,11 +509,10 @@ mod tests {
             "@agentclientprotocol/claude-agent-acp@0.58.1",
             Some("22.0.0"),
         );
-        assert_npx_version(
+        assert_system_command(
             AgentType::Gemini,
-            "0.50.0",
-            "@google/gemini-cli@0.50.0",
-            Some("20.0.0"),
+            "agy",
+            &[],
         );
         assert_npx_version(
             AgentType::OpenClaw,
@@ -548,14 +570,22 @@ mod tests {
     // registry means a newly-added agent that wrongly opts out — or a
     // regression flipping OpenClaw back on — trips this assert.
     #[test]
-    fn only_openclaw_opts_out_of_mcp() {
+    fn openclaw_and_antigravity_opt_out_of_mcp() {
         for agent_type in all_acp_agents() {
             let meta = get_agent_meta(agent_type);
             assert_eq!(
                 meta.supports_mcp,
-                agent_type != AgentType::OpenClaw,
+                !matches!(agent_type, AgentType::OpenClaw | AgentType::Gemini),
                 "unexpected supports_mcp for {agent_type:?}"
             );
         }
+    }
+
+    #[test]
+    fn gemini_slot_displays_as_antigravity() {
+        let meta = get_agent_meta(AgentType::Gemini);
+        assert_eq!(meta.name, "Antigravity CLI");
+        assert!(meta.description.contains("Antigravity"));
+        assert_eq!(AgentType::Gemini.to_string(), "Antigravity CLI");
     }
 }

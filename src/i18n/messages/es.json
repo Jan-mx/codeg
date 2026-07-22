@@ -671,23 +671,23 @@
       "loginSaveFailed": "Inicio de sesión exitoso pero falló al guardar la configuración"
     },
     "gemini": {
-      "authConfig": "Configuración de autenticación de Gemini",
-      "authConfigDescription": "Alineado con la documentación de autenticación de Gemini CLI, con soporte para endpoint personalizado, inicio de sesión de Google, Gemini API Key y Vertex AI (ADC / cuenta de servicio / API Key).",
-      "authMode": "Modo de autenticación",
-      "selectAuthMode": "Seleccionar modo de autenticación",
-      "viewAuthDoc": "Ver documentación de autenticación",
+      "authConfig": "Antigravity Settings",
+      "authConfigDescription": "Runs Antigravity CLI through the local agy command. Configure only model, project, conversation, and print timeout.",
+      "authMode": "Runtime Mode",
+      "selectAuthMode": "Select runtime mode",
+      "viewAuthDoc": "View Antigravity docs",
       "mode": {
-        "custom": "Endpoint personalizado",
-        "loginGoogle": "Inicio de sesión de Google (OAuth)",
-        "vertexServiceAccount": "Vertex AI (Cuenta de servicio)"
+        "custom": "Custom runtime options",
+        "loginGoogle": "Local agy login status",
+        "vertexServiceAccount": "Local agy configuration"
       },
       "hint": {
-        "custom": "Completa API URL, API Key y Modelo; se mapean a GOOGLE_GEMINI_BASE_URL / GEMINI_API_KEY / GEMINI_MODEL.",
-        "loginGoogle": "Ejecuta gemini en terminal y completa primero el inicio de sesión de Google; no se requiere API key.",
-        "geminiApiKey": "Completa GEMINI_API_KEY cuando uses la API de Gemini.",
-        "vertexAdc": "Usa gcloud ADC; se recomienda configurar GOOGLE_CLOUD_PROJECT y GOOGLE_CLOUD_LOCATION.",
-        "vertexServiceAccount": "Establece la ruta del JSON de la cuenta de servicio en GOOGLE_APPLICATION_CREDENTIALS.",
-        "vertexApiKey": "Completa GOOGLE_API_KEY cuando uses API key de Vertex AI."
+        "custom": "Set ANTIGRAVITY_MODEL, ANTIGRAVITY_PROJECT, ANTIGRAVITY_CONVERSATION, and ANTIGRAVITY_PRINT_TIMEOUT.",
+        "loginGoogle": "Confirm agy is authenticated and runnable from the terminal.",
+        "geminiApiKey": "Legacy API key fields are ignored by the Antigravity CLI slot.",
+        "vertexAdc": "Legacy cloud auth fields are ignored by the Antigravity CLI slot.",
+        "vertexServiceAccount": "Legacy service account fields are ignored by the Antigravity CLI slot.",
+        "vertexApiKey": "Legacy API key fields are ignored by the Antigravity CLI slot."
       }
     },
     "openCode": {

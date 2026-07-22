@@ -85,7 +85,6 @@ type McpTranslator = (
 const APP_OPTIONS: { value: McpAppType; label: string }[] = [
   { value: "claude_code", label: "Claude Code" },
   { value: "codex", label: "Codex CLI" },
-  { value: "gemini", label: "Gemini CLI" },
   // OpenClaw 不接受 ACP 线缆上的 MCP 服务器条目（后端 registry.rs supports_mcp=false
   // 会让其 mcpServers 恒为空 []，否则带条目时 OpenClaw 会在建会话阶段报错），按产品
   // 决策不作为可分配目标。McpAppType 仍保留 "open_claw" 以兼容回读存量配置，
