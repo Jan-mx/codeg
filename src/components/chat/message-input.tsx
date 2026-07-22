@@ -146,6 +146,7 @@ import {
   loadMessageInputDraftV2,
   saveMessageInputDraftV2,
 } from "@/lib/message-input-draft"
+import { rankByTextMatch } from "@/lib/fuzzy-text-match"
 import {
   RichComposer,
   type RichComposerHandle,
@@ -1014,20 +1015,16 @@ export function MessageInput({
   const [slashDropdownOpen, setSlashDropdownOpen] = useState(false)
   const [slashDropdownSearch, setSlashDropdownSearch] = useState("")
   const slashDropdownInputRef = useRef<HTMLInputElement>(null)
-  const filteredSlashDropdownCommands = useMemo(() => {
-    const q = slashDropdownSearch.toLowerCase().trim()
-    if (!q) return slashCommands
-    const nameMatches: typeof slashCommands = []
-    const descOnlyMatches: typeof slashCommands = []
-    for (const cmd of slashCommands) {
-      if (cmd.name.toLowerCase().includes(q)) {
-        nameMatches.push(cmd)
-      } else if (cmd.description?.toLowerCase().includes(q)) {
-        descOnlyMatches.push(cmd)
-      }
-    }
-    return [...nameMatches, ...descOnlyMatches]
-  }, [slashCommands, slashDropdownSearch])
+  const filteredSlashDropdownCommands = useMemo(
+    () =>
+      rankByTextMatch(
+        slashDropdownSearch,
+        slashCommands,
+        (cmd) => cmd.name,
+        (cmd) => cmd.description
+      ),
+    [slashCommands, slashDropdownSearch]
+  )
   const handleSlashDropdownOpenChange = useCallback((open: boolean) => {
     setSlashDropdownOpen(open)
     if (!open) setSlashDropdownSearch("")
@@ -1046,28 +1043,19 @@ export function MessageInput({
   const filteredSlashCommands = useMemo(() => {
     if (!slashMenuOpen || slashCommands.length === 0) return []
     if (slashTriggerChar !== "/") return []
-    const filter = slashFilter.toLowerCase()
-    return slashCommands.filter((cmd) =>
-      cmd.name.toLowerCase().includes(filter)
-    )
+    return rankByTextMatch(slashFilter, slashCommands, (cmd) => cmd.name)
   }, [slashMenuOpen, slashCommands, slashTriggerChar, slashFilter])
   const filteredSlashSkills = useMemo(() => {
     // Skills autocomplete is Codex-only and triggered by `$`.
     if (agentType !== "codex") return []
     if (!slashMenuOpen || availableSkills.length === 0) return []
     if (slashTriggerChar !== "$") return []
-    const filter = slashFilter.toLowerCase()
-    if (!filter) return availableSkills
-    const nameMatches: typeof availableSkills = []
-    const idOnlyMatches: typeof availableSkills = []
-    for (const skill of availableSkills) {
-      if (skill.name.toLowerCase().includes(filter)) {
-        nameMatches.push(skill)
-      } else if (skill.id.toLowerCase().includes(filter)) {
-        idOnlyMatches.push(skill)
-      }
-    }
-    return [...nameMatches, ...idOnlyMatches]
+    return rankByTextMatch(
+      slashFilter,
+      availableSkills,
+      (skill) => skill.name,
+      (skill) => skill.id
+    )
   }, [slashMenuOpen, availableSkills, agentType, slashTriggerChar, slashFilter])
   const slashAutocompleteCount =
     filteredSlashCommands.length + filteredSlashSkills.length
